@@ -22,8 +22,17 @@
 
 ## 安装
 
-- 在当前目录下运行：`curl -L -o yala https://github.com/jel1yspot/yala/releases/latest/download/yala.sh && chmod +x ./yala && ./yala --help`
-- 安装到系统目录下：`curl -fL -o /tmp/yala.sh https://github.com/jel1yspot/yala/releases/latest/download/yala.sh && sudo install -m 0755 /tmp/yala.sh /usr/local/bin/yala && yala --help`
+- 在当前目录下运行：
+
+```bash
+curl -L -o yala https://github.com/jel1yspot/yala/releases/latest/download/yala.sh && chmod +x ./yala && ./yala --help
+```
+
+- 安装到系统目录下：
+
+```bash
+curl -fL -o /tmp/yala.sh https://github.com/jel1yspot/yala/releases/latest/download/yala.sh && sudo install -m 0755 /tmp/yala.sh /usr/local/bin/yala && yala --help
+```
 
 ## 命令
 

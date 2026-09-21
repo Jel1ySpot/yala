@@ -112,12 +112,39 @@ pub fun debug_enabled(): Bool {
 
 /// Providers accepted by --connect.
 pub fun connect_providers(): [Text] {
-    return ["openai-compatible", "other-openai"]
+    return ["openai-compatible", "other-openai", "openai", "deepseek", "zai-cn"]
 }
 
 /// Returns true when `provider` is accepted by --connect.
 pub fun is_known_provider(provider: Text): Bool {
     return array_contains(connect_providers(), provider)
+}
+
+/// Returns the preset API base URL for known providers, or "" if custom.
+pub fun provider_preset_base(provider: Text): Text {
+    if {
+        provider == "openai" {
+            return DEFAULT_API_BASE
+        }
+        provider == "deepseek" {
+            return "https://api.deepseek.com"
+        }
+        provider == "zai-cn" {
+            return "https://open.bigmodel.cn/api/paas/v4"
+        }
+        else {
+            return ""
+        }
+    }
+}
+
+/// Prompts the user for an API base URL, falling back to DEFAULT_API_BASE.
+fun prompt_base_url(): Text {
+    const base_url = input_prompt("Base URL [{DEFAULT_API_BASE}]: ")
+    if base_url == "" {
+        return DEFAULT_API_BASE
+    }
+    return base_url
 }
 
 /// Writes `provider` credentials to `path` as JSON, using jq for escaping.
@@ -146,28 +173,35 @@ pub fun save_auth(path: Text, provider: Text, base_url: Text, apikey: Text): Boo
 }
 
 /// Interactively asks for credentials and stores them in AUTH_FILE.
+///
+/// For preset providers (openai, deepseek, zai-cn), only the API key is prompted
+/// and the provider is stored as openai-compatible with the provider's default base URL.
 pub fun connect(provider: Text): Null {
     if provider == "" {
         error("--connect requires a provider, for example: yala --connect openai-compatible")
         return null
     }
     if not is_known_provider(provider) {
-        error("unknown provider: {provider}, expected openai-compatible or other-openai")
+        error("unknown provider: {provider}, expected openai-compatible, other-openai, openai, deepseek or zai-cn")
         return null
     }
     if ensure_jq() == "" {
         return null
     }
-    let base_url = input_prompt("Base URL [{DEFAULT_API_BASE}]: ")
+    let base_url = provider_preset_base(provider)
+    let saved_provider = provider
+    if base_url != "" {
+        saved_provider = "openai-compatible"
+    }
     if base_url == "" {
-        base_url = DEFAULT_API_BASE
+        base_url = prompt_base_url()
     }
     const apikey = input_hidden("API key: ")
     if apikey == "" {
         error("no API key given, nothing saved")
         return null
     }
-    if save_auth(AUTH_FILE, provider, base_url, apikey) {
+    if save_auth(AUTH_FILE, saved_provider, base_url, apikey) {
         info("saved {provider} credentials to {AUTH_FILE}")
     }
 }

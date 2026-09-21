@@ -22,8 +22,17 @@ On every start yala checks for jq; when jq is unavailable it downloads the binar
 
 ## Install
 
-- Run in the current directory: `curl -L -o yala https://github.com/jel1yspot/yala/releases/latest/download/yala.sh && chmod +x ./yala && ./yala --help`
-- Install system-wide: `curl -fL -o /tmp/yala.sh https://github.com/jel1yspot/yala/releases/latest/download/yala.sh && sudo install -m 0755 /tmp/yala.sh /usr/local/bin/yala && yala --help`
+- Run in the current directory:
+
+```bash
+curl -L -o yala https://github.com/jel1yspot/yala/releases/latest/download/yala.sh && chmod +x ./yala && ./yala --help
+```
+
+- Install system-wide:
+
+```bash
+curl -fL -o /tmp/yala.sh https://github.com/jel1yspot/yala/releases/latest/download/yala.sh && sudo install -m 0755 /tmp/yala.sh /usr/local/bin/yala && yala --help
+```
 
 ## Commands
 

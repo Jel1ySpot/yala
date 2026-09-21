@@ -1,6 +1,6 @@
 import { assert } from "std/test"
 import { env_var_set } from "std/env"
-import { AUTH_FILE, connect_providers, debug_enabled, effort_levels, env_or, get_api_base, get_api_key, get_model, is_configured, is_debug_value, is_known_effort, is_known_provider, SESSION_FILE, save_auth, set_session_effort } from "../src/config.ab"
+import { AUTH_FILE, connect_providers, debug_enabled, effort_levels, env_or, get_api_base, get_api_key, get_model, is_configured, is_debug_value, is_known_effort, is_known_provider, provider_preset_base, SESSION_FILE, save_auth, set_session_effort } from "../src/config.ab"
 import { find_jq, jq_value } from "../src/json.ab"
 
 test "env_or falls back when the variable is unset" {
@@ -65,8 +65,32 @@ test "debug_enabled follows YALA_DEBUG" {
 test "connect accepts the supported providers" {
     assert(is_known_provider("openai-compatible"))
     assert(is_known_provider("other-openai"))
+    assert(is_known_provider("openai"))
+    assert(is_known_provider("deepseek"))
+    assert(is_known_provider("zai-cn"))
     assert(not is_known_provider("anthropic"))
-    assert(len(connect_providers()) == 2)
+    assert(len(connect_providers()) == 5)
+}
+
+test "provider_preset_base maps built-in providers to endpoints" {
+    assert(provider_preset_base("openai") == "https://api.openai.com/v1")
+    assert(provider_preset_base("deepseek") == "https://api.deepseek.com")
+    assert(provider_preset_base("zai-cn") == "https://open.bigmodel.cn/api/paas/v4")
+    assert(provider_preset_base("openai-compatible") == "")
+    assert(provider_preset_base("other-openai") == "")
+    assert(provider_preset_base("anthropic") == "")
+}
+
+test "preset providers save auth with openai-compatible provider" {
+    const jq = find_jq()
+    if jq != "" {
+        const path = "/tmp/yala/test-auth-preset.json"
+        const base_url = provider_preset_base("deepseek")
+        assert(save_auth(path, "openai-compatible", base_url, "sk-deepseek-key"))
+        assert(jq_value(path, "provider") == "openai-compatible")
+        assert(jq_value(path, "base_url") == "https://api.deepseek.com")
+        assert(jq_value(path, "apikey") == "sk-deepseek-key")
+    }
 }
 
 test "save_auth writes credentials as json when jq is available" {
