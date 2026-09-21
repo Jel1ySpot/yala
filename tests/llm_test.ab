@@ -1,0 +1,77 @@
+import { assert } from "std/test"
+import { clear_messages, first_messages, push_message, push_message_json, read_messages } from "../src/llm.ab"
+import { find_jq, jq_set_json } from "../src/json.ab"
+
+test "read_messages returns empty for missing and empty conversations" {
+    assert(read_messages("/tmp/yala/no-such-messages.json") == "")
+    const jq = find_jq()
+    if jq != "" {
+        const path = "/tmp/yala/test-messages.json"
+        assert(jq_set_json(path, "messages", "[]"))
+        assert(read_messages(path) == "")
+    }
+}
+
+test "read_messages returns stored messages" {
+    const jq = find_jq()
+    if jq != "" {
+        const path = "/tmp/yala/test-messages-roundtrip.json"
+        const messages = trust $ {jq} -n -c --arg content "hi" '[\{role: "user", content: \$content}]' $
+        assert(jq_set_json(path, "messages", messages))
+        assert(read_messages(path) == messages)
+    }
+}
+
+test "first_messages starts with a system and a user message" {
+    const jq = find_jq()
+    if jq != "" {
+        const messages = first_messages("you are yala", "hi")
+        assert(messages != "")
+        const roles = trust $ printf '%s' "{messages}" | {jq} -r '[.[].role] | join(",")' $
+        const system = trust $ printf '%s' "{messages}" | {jq} -r '.[0].content' $
+        const user = trust $ printf '%s' "{messages}" | {jq} -r '.[1].content' $
+        assert(roles == "system,user")
+        assert(system == "you are yala")
+        assert(user == "hi")
+    }
+}
+
+test "push_message appends role and content" {
+    const jq = find_jq()
+    if jq != "" {
+        const messages = push_message("[]", "user", "hi")
+        assert(messages != "")
+        const count = trust $ printf '%s' "{messages}" | {jq} -r 'length' $
+        const role = trust $ printf '%s' "{messages}" | {jq} -r '.[0].role' $
+        const content = trust $ printf '%s' "{messages}" | {jq} -r '.[0].content' $
+        assert(count == "1")
+        assert(role == "user")
+        assert(content == "hi")
+    }
+}
+
+test "push_message_json appends a raw message object" {
+    const jq = find_jq()
+    if jq != "" {
+        const assistant = trust $ {jq} -n -c '\{role: "assistant", content: "done"}' $
+        const messages = push_message_json("[]", assistant)
+        assert(messages != "")
+        const role = trust $ printf '%s' "{messages}" | {jq} -r '.[0].role' $
+        assert(role == "assistant")
+    }
+    assert(push_message_json("[]", "not json") == "")
+}
+
+test "clear_messages empties the conversation but keeps other fields" {
+    const jq = find_jq()
+    if jq != "" {
+        const path = "/tmp/yala/test-clear-messages.json"
+        assert(jq_set_json(path, "model", "\"deepseek-flash\""))
+        assert(jq_set_json(path, "messages", push_message("[]", "user", "hi")))
+        assert(read_messages(path) != "")
+        assert(clear_messages(path))
+        assert(read_messages(path) == "")
+        const model = trust $ {jq} -r '.model' "{path}" $
+        assert(model == "deepseek-flash")
+    }
+}

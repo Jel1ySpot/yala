@@ -1,0 +1,103 @@
+import { assert } from "std/test"
+import { command_exists, ensure_state_dir, find_jq, host_arch, host_os, is_executable, jq_asset, jq_get_json, jq_set, jq_set_json, jq_value, jq_works, JQ_LOCAL_BIN, STATE_DIR } from "../src/json.ab"
+
+test "jq_asset maps linux architectures" {
+    assert(jq_asset("linux", "x86_64") == "jq-linux-amd64")
+    assert(jq_asset("linux", "amd64") == "jq-linux-amd64")
+    assert(jq_asset("linux", "aarch64") == "jq-linux-arm64")
+    assert(jq_asset("linux", "armv7l") == "jq-linux-armhf")
+    assert(jq_asset("linux", "i686") == "jq-linux-i386")
+    assert(jq_asset("linux", "riscv64") == "jq-linux-riscv64")
+}
+
+test "jq_asset maps macos architectures" {
+    assert(jq_asset("darwin", "arm64") == "jq-macos-arm64")
+    assert(jq_asset("macos", "x86_64") == "jq-macos-amd64")
+}
+
+test "jq_asset rejects unknown platforms" {
+    assert(jq_asset("plan9", "x86_64") == "")
+    assert(jq_asset("linux", "sparc64") == "")
+}
+
+test "command_exists finds shell but not a fake command" {
+    assert(command_exists("sh"))
+    assert(not command_exists("yala-definitely-not-a-command"))
+}
+
+test "is_executable accepts /bin/sh and rejects missing paths" {
+    assert(is_executable("/bin/sh"))
+    assert(not is_executable("/tmp/yala-no-such-file-xyz"))
+}
+
+test "host_os and host_arch are detected" {
+    assert(host_os() != "")
+    assert(host_arch() != "")
+}
+
+test "jq_works rejects a binary that is not jq" {
+    assert(not jq_works("/bin/false"))
+}
+
+test "runtime files live under /tmp/yala" {
+    assert(STATE_DIR == "/tmp/yala")
+    assert(JQ_LOCAL_BIN == "/tmp/yala/jq")
+    assert(ensure_state_dir())
+}
+
+test "jq_set and jq_value round-trip" {
+    if find_jq() != "" {
+        const path = "/tmp/yala/test-json.json"
+        assert(jq_set(path, "model", "gpt-test"))
+        assert(jq_value(path, "model") == "gpt-test")
+    }
+}
+
+test "jq_set keeps existing fields" {
+    if find_jq() != "" {
+        const path = "/tmp/yala/test-json-merge.json"
+        assert(jq_set(path, "model", "a"))
+        assert(jq_set(path, "other", "b"))
+        assert(jq_value(path, "model") == "a")
+        assert(jq_value(path, "other") == "b")
+    }
+}
+
+test "jq_set escapes special characters" {
+    if find_jq() != "" {
+        const path = "/tmp/yala/test-json-escape.json"
+        assert(jq_set(path, "model", "a\"b\\c"))
+        assert(jq_value(path, "model") == "a\"b\\c")
+    }
+}
+
+test "jq_value returns empty for missing keys and files" {
+    if find_jq() != "" {
+        const path = "/tmp/yala/test-json-missing.json"
+        assert(jq_set(path, "model", "x"))
+        assert(jq_value(path, "missing") == "")
+    }
+    assert(jq_value("/tmp/yala/no-such-file.json", "model") == "")
+}
+
+test "jq_set_json and jq_get_json round-trip JSON values" {
+    const jq = find_jq()
+    if jq != "" {
+        const path = "/tmp/yala/test-json-array.json"
+        const messages = trust $ {jq} -n -c --arg content "hi" '[\{role: "user", content: \$content}]' $
+        assert(jq_set_json(path, "messages", messages))
+        assert(jq_get_json(path, "messages") == messages)
+        assert(jq_set_json(path, "extra", "[1,2]"))
+        assert(jq_get_json(path, "messages") == messages)
+        assert(jq_get_json(path, "extra") == "[1,2]")
+    }
+}
+
+test "jq_get_json returns empty for missing keys and files" {
+    assert(jq_get_json("/tmp/yala/no-such-json.json", "messages") == "")
+    if find_jq() != "" {
+        const path = "/tmp/yala/test-json-missing-key.json"
+        assert(jq_set_json(path, "other", "[1]"))
+        assert(jq_get_json(path, "messages") == "")
+    }
+}

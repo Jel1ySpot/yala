@@ -1,0 +1,126 @@
+import { assert } from "std/test"
+import { build_chat_body, join_url, parse_assistant_message, parse_chat_error, parse_chat_reply, parse_tool_calls } from "../src/provider/openai.ab"
+import { find_jq } from "../src/json.ab"
+
+test "join_url joins bases and paths with one slash" {
+    assert(join_url("https://api.example.com", "models") == "https://api.example.com/models")
+    assert(join_url("https://api.example.com/", "models") == "https://api.example.com/models")
+    assert(join_url("https://api.example.com///", "chat/completions") == "https://api.example.com/chat/completions")
+}
+
+test "build_chat_body embeds the model and messages" {
+    const jq = find_jq()
+    if jq != "" {
+        const messages = trust $ {jq} -n -c --arg content "hi \"there\"" '[\{role: "user", content: \$content}]' $
+        const body = build_chat_body("gpt-test", messages, "[]", "")
+        assert(body != "")
+        const model = trust $ printf '%s' "{body}" | {jq} -r '.model' $
+        const content = trust $ printf '%s' "{body}" | {jq} -r '.messages[0].content' $
+        const role = trust $ printf '%s' "{body}" | {jq} -r '.messages[0].role' $
+        const has_tools = trust $ printf '%s' "{body}" | {jq} -r 'has("tools")' $
+        assert(model == "gpt-test")
+        assert(content == "hi \"there\"")
+        assert(role == "user")
+        assert(has_tools == "false")
+    }
+    assert(build_chat_body("gpt-test", "not json", "[]", "") == "")
+}
+
+test "build_chat_body offers tools when given" {
+    const jq = find_jq()
+    if jq != "" {
+        const messages = trust $ {jq} -n -c '[]' $
+        const tools = trust $ {jq} -n -c '[\{type: "function", function: \{name: "run", parameters: \{type: "object", properties: \{command: \{type: "string"}}, required: ["command"]}}}]' $
+        const body = build_chat_body("m", messages, tools, "")
+        const name = trust $ printf '%s' "{body}" | {jq} -r '.tools[0].function.name' $
+        const required = trust $ printf '%s' "{body}" | {jq} -r '.tools[0].function.parameters.required[0]' $
+        assert(name == "run")
+        assert(required == "command")
+    }
+}
+
+test "build_chat_body applies the thinking effort" {
+    const jq = find_jq()
+    if jq != "" {
+        const messages = trust $ {jq} -n -c '[]' $
+        const plain = build_chat_body("m", messages, "[]", "")
+        const has_thinking = trust $ printf '%s' "{plain}" | {jq} -r 'has("thinking")' $
+        const has_effort = trust $ printf '%s' "{plain}" | {jq} -r 'has("reasoning_effort")' $
+        assert(has_thinking == "false")
+        assert(has_effort == "false")
+        const enabled = build_chat_body("m", messages, "[]", "high")
+        const thinking_type = trust $ printf '%s' "{enabled}" | {jq} -r '.thinking.type' $
+        const effort = trust $ printf '%s' "{enabled}" | {jq} -r '.reasoning_effort' $
+        assert(thinking_type == "enabled")
+        assert(effort == "high")
+        const disabled = build_chat_body("m", messages, "[]", "disable")
+        const disabled_type = trust $ printf '%s' "{disabled}" | {jq} -r '.thinking.type' $
+        const disabled_effort = trust $ printf '%s' "{disabled}" | {jq} -r 'has("reasoning_effort")' $
+        assert(disabled_type == "disabled")
+        assert(disabled_effort == "false")
+    }
+}
+
+test "parse_assistant_message keeps tool calls and reasoning" {
+    const jq = find_jq()
+    if jq != "" {
+        const arguments = trust $ {jq} -n -c --arg command "ls" '\{command: \$command}' $
+        const response = trust $ {jq} -n -c --arg arguments "{arguments}" '\{choices: [\{message: \{role: "assistant", content: "checking", reasoning_content: "hmm", tool_calls: [\{index: 0, id: "call_1", type: "function", function: \{name: "run", arguments: \$arguments}}]}}]}' $
+        const message = parse_assistant_message(response)
+        assert(message != "")
+        const role = trust $ printf '%s' "{message}" | {jq} -r '.role' $
+        const content = trust $ printf '%s' "{message}" | {jq} -r '.content' $
+        const name = trust $ printf '%s' "{message}" | {jq} -r '.tool_calls[0].function.name' $
+        const call_id = trust $ printf '%s' "{message}" | {jq} -r '.tool_calls[0].id' $
+        const reasoning = trust $ printf '%s' "{message}" | {jq} -r '.reasoning_content' $
+        const has_index = trust $ printf '%s' "{message}" | {jq} -r '.tool_calls[0] | has("index")' $
+        assert(role == "assistant")
+        assert(content == "checking")
+        assert(name == "run")
+        assert(call_id == "call_1")
+        assert(reasoning == "hmm")
+        assert(has_index == "false")
+    }
+    assert(parse_assistant_message("not json") == "")
+}
+
+test "parse_chat_reply extracts the assistant content" {
+    const jq = find_jq()
+    if jq != "" {
+        const response = trust $ {jq} -n -c --arg content "hello" '\{choices: [\{message: \{role: "assistant", content: \$content}}]}' $
+        assert(parse_chat_reply(response) == "hello")
+    }
+    assert(parse_chat_reply("not json") == "")
+    assert(parse_chat_reply("") == "")
+}
+
+test "parse_tool_calls returns the tool call array" {
+    const jq = find_jq()
+    if jq != "" {
+        const arguments = trust $ {jq} -n -c --arg command "ls" '\{command: \$command}' $
+        const response = trust $ {jq} -n -c --arg arguments "{arguments}" '\{choices: [\{message: \{role: "assistant", content: "checking", tool_calls: [\{index: 0, id: "call_1", type: "function", function: \{name: "run", arguments: \$arguments}}]}}]}' $
+        const calls = parse_tool_calls(response)
+        const count = trust $ printf '%s' "{calls}" | {jq} -r 'length' $
+        const name = trust $ printf '%s' "{calls}" | {jq} -r '.[0].function.name' $
+        assert(count == "1")
+        assert(name == "run")
+        const plain = trust $ {jq} -n -c --arg content "hi" '\{choices: [\{message: \{role: "assistant", content: \$content}}]}' $
+        assert(parse_tool_calls(plain) == "[]")
+    }
+    assert(parse_tool_calls("not json") == "")
+}
+
+test "parse_chat_error finds api error messages" {
+    const jq = find_jq()
+    if jq != "" {
+        const nested = trust $ {jq} -n -c '\{error: \{message: "invalid api key"}}' $
+        assert(parse_chat_error(nested) == "invalid api key")
+        const flat = trust $ {jq} -n -c '\{error: "plain error"}' $
+        assert(parse_chat_error(flat) == "plain error")
+        const top = trust $ {jq} -n -c '\{message: "top error"}' $
+        assert(parse_chat_error(top) == "top error")
+        const ok = trust $ {jq} -n -c '\{choices: []}' $
+        assert(parse_chat_error(ok) == "")
+    }
+    assert(parse_chat_error("not json") == "")
+}

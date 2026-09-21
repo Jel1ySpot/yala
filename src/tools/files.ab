@@ -1,0 +1,13 @@
+import { file_exists, file_read, file_write } from "std/fs"
+
+/// Returns the contents of a text file, or an error message.
+pub fun read_file(path: Text): Text {
+    if file_exists(path):
+        return trust file_read(path)
+    return "cannot read file: {path}"
+}
+
+/// Writes `content` to a text file, overwriting any existing content.
+pub fun write_file(path: Text, content: Text): Null {
+    trust file_write(path, content)
+}

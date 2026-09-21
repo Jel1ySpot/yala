@@ -1,0 +1,36 @@
+import { STATE_DIR, ensure_state_dir } from "../json.ab"
+
+/// Runs `command` in a bash subshell and returns its combined output.
+///
+/// stdout and stderr are merged into a temporary file; a failing command gets
+/// its exit code appended so the caller can tell what happened.
+fun capture(prefix: Text, command: Text): Text {
+    if not ensure_state_dir() {
+        return "cannot create {STATE_DIR}"
+    }
+    const path = trust $ mktemp "{STATE_DIR}/tool-output.XXXXXX" $
+    if path == "" {
+        return "cannot create a temporary file for the command output"
+    }
+    $ {prefix} bash -c "{command}" > "{path}" 2>&1 $ failed(code) {
+        const output = trust $ cat "{path}" $
+        trust $ rm -f "{path}" $
+        if output == "" {
+            return "[exit code: {code}]"
+        }
+        return "{output}\n[exit code: {code}]"
+    }
+    const output = trust $ cat "{path}" $
+    trust $ rm -f "{path}" $
+    return output
+}
+
+/// Runs a bash command and returns its output.
+pub fun run(command: Text): Text {
+    return capture("", command)
+}
+
+/// Runs a bash command with sudo, asking for the password in the shell.
+pub fun sudo_run(command: Text): Text {
+    return capture("sudo", command)
+}

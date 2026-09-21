@@ -1,0 +1,43 @@
+/// Version reported by --version.
+pub const VERSION = "0.1.0"
+
+/// Returns true when `short` or `long` appears in the arguments.
+///
+/// Index 0 of `args` is the program name and is always skipped.
+pub fun wants(args: [Text], short: Text, long: Text): Bool {
+    let found = false
+    for i, a in args {
+        if i > 0 and (a == short or a == long) {
+            found = true
+        }
+    }
+    return found
+}
+
+/// Returns the value that follows `short` or `long`, or an empty string when missing.
+///
+/// Use the same flag twice when it has no short form, for example
+/// `flag_value(args, "--connect", "--connect")`.
+pub fun flag_value(args: [Text], short: Text, long: Text): Text {
+    let value = ""
+    for i, a in args {
+        if (a == short or a == long) and i + 1 < len(args) {
+            value = args[i + 1]
+        }
+    }
+    return value
+}
+
+/// Joins all user arguments (index 0 is the program name) into one prompt.
+pub fun build_prompt(args: [Text]): Text {
+    let prompt = ""
+    for i, a in args {
+        if i == 1 {
+            prompt = a
+        }
+        if i > 1 {
+            prompt = "{prompt} {a}"
+        }
+    }
+    return prompt
+}

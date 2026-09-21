@@ -1,0 +1,278 @@
+import { dir_create, dir_exists, file_chmod, file_exists } from "std/fs"
+import { lowercase } from "std/text"
+
+import { error, info } from "./ui.ab"
+
+/// Directory yala uses for its runtime files (jq, auth, session).
+pub const STATE_DIR = "/tmp/yala"
+
+/// jq binary bootstrapped by yala when the system has none.
+pub const JQ_LOCAL_BIN = "{STATE_DIR}/jq"
+
+/// jq release downloaded when no jq is available.
+pub const JQ_RELEASE = "jq-1.8.2"
+
+/// Base URL of the jq release assets.
+pub const JQ_DOWNLOAD_BASE = "https://github.com/jqlang/jq/releases/download"
+
+/// Returns true when `command` can be found in PATH.
+pub fun command_exists(command: Text): Bool {
+    trust $ command -v {command} >/dev/null 2>&1 $
+    return status() == 0
+}
+
+/// Returns true when `path` points to an executable file.
+pub fun is_executable(path: Text): Bool {
+    trust $ test -x {path} $
+    return status() == 0
+}
+
+/// Runs `<path> --version` and reports whether it works.
+pub fun jq_works(path: Text): Bool {
+    trust $ {path} --version >/dev/null 2>&1 $
+    return status() == 0
+}
+
+/// Returns the current operating system name, lowercased.
+pub fun host_os(): Text {
+    const name = trust $ uname -s $
+    return lowercase(name)
+}
+
+/// Returns the current machine architecture, lowercased.
+pub fun host_arch(): Text {
+    const arch = trust $ uname -m $
+    return lowercase(arch)
+}
+
+/// Maps a Linux architecture to a jq release asset name.
+fun linux_jq_asset(arch: Text): Text {
+    if arch == "x86_64" or arch == "amd64" {
+        return "jq-linux-amd64"
+    }
+    if arch == "aarch64" or arch == "arm64" {
+        return "jq-linux-arm64"
+    }
+    if arch == "armv7l" or arch == "armv7" or arch == "armhf" {
+        return "jq-linux-armhf"
+    }
+    if arch == "armv6l" or arch == "armel" {
+        return "jq-linux-armel"
+    }
+    if arch == "i386" or arch == "i486" or arch == "i586" or arch == "i686" {
+        return "jq-linux-i386"
+    }
+    if arch == "ppc64le" {
+        return "jq-linux-ppc64el"
+    }
+    if arch == "powerpc" or arch == "ppc" {
+        return "jq-linux-powerpc"
+    }
+    if arch == "s390x" {
+        return "jq-linux-s390x"
+    }
+    if arch == "riscv64" {
+        return "jq-linux-riscv64"
+    }
+    if arch == "mips" {
+        return "jq-linux-mips"
+    }
+    if arch == "mipsel" {
+        return "jq-linux-mipsel"
+    }
+    if arch == "mips64" {
+        return "jq-linux-mips64"
+    }
+    if arch == "mips64el" {
+        return "jq-linux-mips64el"
+    }
+    return ""
+}
+
+/// Maps a macOS architecture to a jq release asset name.
+fun macos_jq_asset(arch: Text): Text {
+    if arch == "x86_64" or arch == "amd64" {
+        return "jq-macos-amd64"
+    }
+    if arch == "arm64" or arch == "aarch64" {
+        return "jq-macos-arm64"
+    }
+    return ""
+}
+
+/// Maps an OS/architecture pair to a jq release asset name.
+pub fun jq_asset(os: Text, arch: Text): Text {
+    if os == "linux" {
+        return linux_jq_asset(arch)
+    }
+    if os == "darwin" or os == "macos" {
+        return macos_jq_asset(arch)
+    }
+    return ""
+}
+
+/// Returns the jq asset matching the current machine, or "".
+pub fun host_jq_asset(): Text {
+    return jq_asset(host_os(), host_arch())
+}
+
+/// Downloads `url` to `dest` using curl or wget.
+pub fun download_file(url: Text, dest: Text): Bool {
+    if command_exists("curl") {
+        $ curl -fsSL {url} -o {dest} $ failed {
+            return false
+        }
+        return true
+    }
+    if command_exists("wget") {
+        $ wget -q -O {dest} {url} $ failed {
+            return false
+        }
+        return true
+    }
+    return false
+}
+
+/// Finds an already available jq binary, or "" when there is none.
+pub fun find_jq(): Text {
+    if command_exists("jq") {
+        return "jq"
+    }
+    if file_exists(JQ_LOCAL_BIN) {
+        if not is_executable(JQ_LOCAL_BIN) {
+            file_chmod(JQ_LOCAL_BIN, "755") failed {
+                return ""
+            }
+        }
+        if jq_works(JQ_LOCAL_BIN) {
+            return JQ_LOCAL_BIN
+        }
+    }
+    return ""
+}
+
+/// Makes sure STATE_DIR exists and reports whether it is usable.
+pub fun ensure_state_dir(): Bool {
+    if dir_exists(STATE_DIR) {
+        return true
+    }
+    dir_create(STATE_DIR) failed(code) {
+        error("cannot create {STATE_DIR} (exit code {code})")
+        return false
+    }
+    return true
+}
+
+/// Makes sure a working jq is available and returns its path.
+///
+/// Checks the `jq` command and `/tmp/yala/jq` first; when neither works it
+/// downloads the jq release asset for this machine.
+pub fun ensure_jq(): Text {
+    const found = find_jq()
+    if found != "" {
+        return found
+    }
+    if not ensure_state_dir() {
+        return ""
+    }
+    if not command_exists("curl") and not command_exists("wget") {
+        error("jq is missing and neither curl nor wget is available to download it")
+        return ""
+    }
+    const asset = host_jq_asset()
+    if asset == "" {
+        error("no prebuilt jq binary for {host_os()}/{host_arch()}")
+        return ""
+    }
+    const url = "{JQ_DOWNLOAD_BASE}/{JQ_RELEASE}/{asset}"
+    info("jq not found, downloading {asset} to {JQ_LOCAL_BIN}")
+    if not download_file(url, JQ_LOCAL_BIN) {
+        error("failed to download jq from {url}")
+        return ""
+    }
+    file_chmod(JQ_LOCAL_BIN, "755") failed(code) {
+        error("cannot make {JQ_LOCAL_BIN} executable (exit code {code})")
+        return ""
+    }
+    if not jq_works(JQ_LOCAL_BIN) {
+        error("{JQ_LOCAL_BIN} does not run on this system")
+        return ""
+    }
+    info("jq ready at {JQ_LOCAL_BIN}")
+    return JQ_LOCAL_BIN
+}
+
+/// Reads `key` from the JSON file at `path` with jq, or "" when unavailable.
+pub fun jq_value(path: Text, key: Text): Text {
+    if not file_exists(path) {
+        return ""
+    }
+    const jq = find_jq()
+    if jq == "" {
+        return ""
+    }
+    const value = $ {jq} -r ".{key} // empty" "{path}" $ failed {
+        return ""
+    }
+    return value
+}
+
+/// Reads `key` from the JSON file at `path` as compact JSON, or "".
+///
+/// Unlike `jq_value` the result keeps JSON syntax, so arrays and objects can be
+/// handed back to jq, for example the `messages` array in SESSION_FILE.
+pub fun jq_get_json(path: Text, key: Text): Text {
+    if not file_exists(path) {
+        return ""
+    }
+    const jq = find_jq()
+    if jq == "" {
+        return ""
+    }
+    const value = $ {jq} -c ".{key} // empty" "{path}" $ failed {
+        return ""
+    }
+    return value
+}
+
+/// Sets `key` to the JSON value `value_json` in `path`, creating it when missing.
+///
+/// `value_json` must be valid JSON, for example `[]` or the output of jq.
+pub fun jq_set_json(path: Text, key: Text, value_json: Text): Bool {
+    const jq = ensure_jq()
+    if jq == "" {
+        return false
+    }
+    if not ensure_state_dir() {
+        return false
+    }
+    const tmp = "{path}.tmp"
+    if file_exists(path) {
+        $ {jq} --argjson value "{value_json}" '.{key} = \$value' "{path}" > "{tmp}" $ failed(code) {
+            error("cannot update {path} (exit code {code})")
+            return false
+        }
+    } else {
+        $ {jq} -n --argjson value "{value_json}" '.{key} = \$value' > "{tmp}" $ failed(code) {
+            error("cannot create {path} (exit code {code})")
+            return false
+        }
+    }
+    $ mv "{tmp}" "{path}" $ failed(code) {
+        error("cannot replace {path} (exit code {code})")
+        return false
+    }
+    return true
+}
+
+/// Sets `key` to the string `value` in the JSON file at `path`.
+pub fun jq_set(path: Text, key: Text, value: Text): Bool {
+    const jq = ensure_jq()
+    if jq == "" {
+        return false
+    }
+    const value_json = $ {jq} -n --arg value "{value}" '\$value' $ failed {
+        return false
+    }
+    return jq_set_json(path, key, value_json)
+}

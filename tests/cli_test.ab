@@ -1,0 +1,32 @@
+import { assert } from "std/test"
+import { build_prompt, flag_value, wants } from "../src/cli.ab"
+
+test "wants detects flags after the program name" {
+    let args = ["yala", "hello", "--help"]
+    assert(wants(args, "-h", "--help"))
+    assert(not wants(args, "-v", "--version"))
+}
+
+test "flag_value returns the value after a flag" {
+    let args = ["yala", "--connect", "openai-compatible"]
+    assert(flag_value(args, "--connect", "--connect") == "openai-compatible")
+    assert(flag_value(args, "--missing", "--missing") == "")
+}
+
+test "flag_value accepts a short and a long flag" {
+    assert(flag_value(["yala", "-m", "gpt-4o"], "-m", "--model") == "gpt-4o")
+    assert(flag_value(["yala", "--model", "other"], "-m", "--model") == "other")
+    assert(flag_value(["yala"], "-m", "--model") == "")
+}
+
+test "wants detects the continue flag" {
+    assert(wants(["yala", "-c"], "-c", "--continue"))
+    assert(wants(["yala", "--continue"], "-c", "--continue"))
+    assert(not wants(["yala", "--connect", "openai-compatible"], "-c", "--continue"))
+}
+
+test "build_prompt joins user arguments" {
+    let args = ["yala", "list", "all", "files"]
+    assert(build_prompt(args) == "list all files")
+    assert(build_prompt(["yala"]) == "")
+}

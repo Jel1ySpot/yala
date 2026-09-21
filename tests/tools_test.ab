@@ -1,0 +1,35 @@
+import { assert } from "std/test"
+import { text_contains } from "std/text"
+import { ensure_state_dir } from "../src/json.ab"
+import { run } from "../src/tools/bash.ab"
+import { read_file, write_file } from "../src/tools/files.ab"
+import { ask_question } from "../src/tools/question.ab"
+
+test "run executes bash commands" {
+    assert(run("echo yala") == "yala")
+    assert(run("printf 'a\nb\n' | wc -l") == "2")
+    const mixed = run("echo out; echo err >&2")
+    assert(text_contains(mixed, "out"))
+    assert(text_contains(mixed, "err"))
+}
+
+test "run reports failing commands" {
+    assert(run("exit 3") == "[exit code: 3]")
+    assert(text_contains(run("echo boom >&2; exit 2"), "boom"))
+}
+
+test "write_file and read_file round-trip" {
+    assert(ensure_state_dir())
+    let path = "/tmp/yala/test-file.txt"
+    write_file(path, "hello from yala")
+    assert(read_file(path) == "hello from yala")
+}
+
+test "read_file reports missing files" {
+    let result = read_file("/tmp/yala/no-such-file.txt")
+    assert(result == "cannot read file: /tmp/yala/no-such-file.txt")
+}
+
+test "ask_question refuses an empty question without prompting" {
+    assert(ask_question("") == "the question tool needs a non-empty question")
+}

@@ -1,0 +1,19 @@
+import { input_prompt } from "std/env"
+
+import { info } from "../ui.ab"
+
+/// Asks the user a question and returns their natural-language answer.
+///
+/// The question is printed here, then the answer is read from the terminal so
+/// the user can reply freely instead of picking one of a fixed set of options.
+pub fun ask_question(question: Text): Text {
+    if question == "" {
+        return "the question tool needs a non-empty question"
+    }
+    info("question: {question}")
+    const answer = input_prompt("> ")
+    if answer == "" {
+        return "(the user gave no answer)"
+    }
+    return answer
+}

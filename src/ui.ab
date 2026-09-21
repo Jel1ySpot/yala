@@ -1,0 +1,24 @@
+/// Terminal output helpers.
+///
+/// Every function here only writes to stdout so the rest of the code can stay
+/// free of formatting details.
+
+/// Prints an informational line prefixed with [yala].
+pub fun info(message: Text): Null {
+    echo("[yala] {message}")
+}
+
+/// Prints an error line prefixed with [yala:error].
+pub fun error(message: Text): Null {
+    echo("[yala:error] {message}")
+}
+
+/// Prints a debug line prefixed with [yala:debug].
+pub fun debug(message: Text): Null {
+    echo("[yala:debug] {message}")
+}
+
+/// Prints a plain result line.
+pub fun output(message: Text): Null {
+    echo(message)
+}

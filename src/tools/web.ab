@@ -1,0 +1,80 @@
+import { AUTH_FILE, debug_enabled, env_or } from "../config.ab"
+import { ensure_jq, jq_value } from "../json.ab"
+import { debug } from "../ui.ab"
+
+/// Default base URL of the Anysearch API.
+pub const SEARCH_API_BASE = "https://api.anysearch.com"
+
+/// Number of results requested from the search API.
+pub const SEARCH_MAX_RESULTS = 5
+
+/// Base URL of the search API, overridable with YALA_SEARCH_API_BASE.
+pub fun search_api_base(): Text {
+    const from_env = env_or("YALA_SEARCH_API_BASE", "")
+    if from_env != "" {
+        return from_env
+    }
+    return SEARCH_API_BASE
+}
+
+/// API key for the search API: YALA_SEARCH_API_KEY, then auth.json.
+///
+/// The search API also accepts anonymous requests, so an empty key means the
+/// request is sent without an Authorization header.
+pub fun search_api_key(): Text {
+    const from_env = env_or("YALA_SEARCH_API_KEY", "")
+    if from_env != "" {
+        return from_env
+    }
+    return jq_value(AUTH_FILE, "search_apikey")
+}
+
+/// Turns a /v1/search response into readable result text.
+///
+/// Returns "" for an empty result list, and an error line for an error
+/// envelope. The jq filter is the only place that knows the response shape.
+pub fun format_search_results(response: Text): Text {
+    const jq = ensure_jq()
+    if jq == "" {
+        return ""
+    }
+    const results = trust $ printf '%s' "{response}" | {jq} -r 'if .code == 0 then ([.data.results // [] | .[] | ((.title // "") + "\n" + (.url // "") + "\n" + ((.snippet // "") | .[0:400]))] | join("\n\n")) else ("search failed: " + (.message // "unknown error")) end' 2>/dev/null $ failed {
+        return ""
+    }
+    return results
+}
+
+/// Searches the web through Anysearch and returns the top results as text.
+pub fun web_search(query: Text): Text {
+    if query == "" {
+        return "web_search needs a query"
+    }
+    const jq = ensure_jq()
+    if jq == "" {
+        return "web_search: jq is not available"
+    }
+    const body = $ {jq} -n -c --arg query "{query}" '\{query: \$query, max_results: {SEARCH_MAX_RESULTS}}' $ failed {
+        return "web_search: cannot build the request body"
+    }
+    const url = "{search_api_base()}/v1/search"
+    const key = search_api_key()
+    if debug_enabled() {
+        debug("POST {url}")
+        debug("{body}")
+    }
+    let response = ""
+    if key == "" {
+        response = $ printf '%s' "{body}" | curl -sS -X POST "{url}" -H "Content-Type: application/json" -d @- $ failed(code) {
+            return "web_search: cannot reach {url} (exit code {code})"
+        }
+    } else {
+        response = $ printf '%s' "{body}" | curl -sS -X POST "{url}" -H "Authorization: Bearer {key}" -H "Content-Type: application/json" -d @- $ failed(code) {
+            return "web_search: cannot reach {url} (exit code {code})"
+        }
+    }
+    const results = format_search_results(response)
+    if results == "" {
+        return "web_search: no results for: {query}"
+    }
+    return results
+}

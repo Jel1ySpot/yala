@@ -1,0 +1,173 @@
+import { array_contains } from "std/array"
+import { env_var_get, env_var_test, input_hidden, input_prompt } from "std/env"
+import { file_chmod } from "std/fs"
+
+import { ensure_jq, ensure_state_dir, jq_set, jq_value, STATE_DIR } from "./json.ab"
+import { error, info } from "./ui.ab"
+
+/// Model used when neither YALA_MODEL nor SESSION_FILE provide one.
+pub const DEFAULT_MODEL = "gpt-4o-mini"
+
+/// API base used when neither YALA_API_BASE nor AUTH_FILE provide one.
+pub const DEFAULT_API_BASE = "https://api.openai.com/v1"
+
+/// File where --connect stores provider credentials.
+pub const AUTH_FILE = "{STATE_DIR}/auth.json"
+
+/// File where --model stores the model for the current session.
+pub const SESSION_FILE = "{STATE_DIR}/session.json"
+
+/// Reads an environment variable, falling back to `fallback` when unset.
+pub fun env_or(key: Text, fallback: Text): Text {
+    if env_var_test(key) {
+        return trust env_var_get(key)
+    }
+    return fallback
+}
+
+/// Returns the model from YALA_MODEL, SESSION_FILE or the default.
+pub fun get_model(): Text {
+    const from_env = env_or("YALA_MODEL", "")
+    if from_env != "" {
+        return from_env
+    }
+    const from_session = jq_value(SESSION_FILE, "model")
+    if from_session != "" {
+        return from_session
+    }
+    return DEFAULT_MODEL
+}
+
+/// Stores `model` in SESSION_FILE for later runs.
+pub fun set_session_model(model: Text): Bool {
+    return jq_set(SESSION_FILE, "model", model)
+}
+
+/// Thinking effort levels accepted by --effort.
+pub fun effort_levels(): [Text] {
+    return ["disable", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+}
+
+/// Returns true when `effort` is a known thinking effort level.
+pub fun is_known_effort(effort: Text): Bool {
+    return array_contains(effort_levels(), effort)
+}
+
+/// Returns the thinking effort from YALA_EFFORT, SESSION_FILE or "" (server default).
+pub fun get_effort(): Text {
+    const from_env = env_or("YALA_EFFORT", "")
+    if from_env != "" {
+        return from_env
+    }
+    return jq_value(SESSION_FILE, "effort")
+}
+
+/// Stores `effort` in SESSION_FILE for later runs, rejecting unknown levels.
+pub fun set_session_effort(effort: Text): Bool {
+    if not is_known_effort(effort) {
+        return false
+    }
+    return jq_set(SESSION_FILE, "effort", effort)
+}
+
+/// Returns the API base from YALA_API_BASE, AUTH_FILE or the default.
+pub fun get_api_base(): Text {
+    const from_env = env_or("YALA_API_BASE", "")
+    if from_env != "" {
+        return from_env
+    }
+    const from_auth = jq_value(AUTH_FILE, "base_url")
+    if from_auth != "" {
+        return from_auth
+    }
+    return DEFAULT_API_BASE
+}
+
+/// Returns the API key from YALA_API_KEY or AUTH_FILE, or "" when unset.
+pub fun get_api_key(): Text {
+    const from_env = env_or("YALA_API_KEY", "")
+    if from_env != "" {
+        return from_env
+    }
+    return jq_value(AUTH_FILE, "apikey")
+}
+
+/// Returns true when an API key is available.
+pub fun is_configured(): Bool {
+    return get_api_key() != ""
+}
+
+/// Returns true when a YALA_DEBUG value counts as enabled.
+pub fun is_debug_value(value: Text): Bool {
+    if value == "" or value == "0" or value == "false" {
+        return false
+    }
+    return true
+}
+
+/// Returns true when YALA_DEBUG enables raw network request output.
+pub fun debug_enabled(): Bool {
+    return is_debug_value(env_or("YALA_DEBUG", ""))
+}
+
+/// Providers accepted by --connect.
+pub fun connect_providers(): [Text] {
+    return ["openai-compatible", "other-openai"]
+}
+
+/// Returns true when `provider` is accepted by --connect.
+pub fun is_known_provider(provider: Text): Bool {
+    return array_contains(connect_providers(), provider)
+}
+
+/// Writes `provider` credentials to `path` as JSON, using jq for escaping.
+pub fun save_auth(path: Text, provider: Text, base_url: Text, apikey: Text): Bool {
+    const jq = ensure_jq()
+    if jq == "" {
+        return false
+    }
+    if not ensure_state_dir() {
+        return false
+    }
+    $ {jq} -n \
+        --arg provider "{provider}" \
+        --arg base_url "{base_url}" \
+        --arg apikey "{apikey}" \
+        '\{provider: \$provider, base_url: \$base_url, apikey: \$apikey}' \
+        > "{path}" $ failed(code) {
+        error("cannot write {path} (exit code {code})")
+        return false
+    }
+    file_chmod(path, "600") failed(code) {
+        error("cannot restrict permissions of {path} (exit code {code})")
+        return false
+    }
+    return true
+}
+
+/// Interactively asks for credentials and stores them in AUTH_FILE.
+pub fun connect(provider: Text): Null {
+    if provider == "" {
+        error("--connect requires a provider, for example: yala --connect openai-compatible")
+        return null
+    }
+    if not is_known_provider(provider) {
+        error("unknown provider: {provider}, expected openai-compatible or other-openai")
+        return null
+    }
+    if ensure_jq() == "" {
+        return null
+    }
+    let base_url = input_prompt("Base URL [{DEFAULT_API_BASE}]: ")
+    if base_url == "" {
+        base_url = DEFAULT_API_BASE
+    }
+    const apikey = input_hidden("API key: ")
+    if apikey == "" {
+        error("no API key given, nothing saved")
+        return null
+    }
+    if save_auth(AUTH_FILE, provider, base_url, apikey) {
+        info("saved {provider} credentials to {AUTH_FILE}")
+    }
+}

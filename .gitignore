@@ -1,0 +1,10 @@
+# Build outputs
+dist/
+docs/
+
+# Local scratch files
+*.log
+*.tmp
+
+# Editor / OS noise
+.DS_Store

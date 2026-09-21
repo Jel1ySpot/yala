@@ -1,0 +1,90 @@
+import { assert } from "std/test"
+import { env_var_set } from "std/env"
+import { AUTH_FILE, connect_providers, debug_enabled, effort_levels, env_or, get_api_base, get_api_key, get_model, is_configured, is_debug_value, is_known_effort, is_known_provider, SESSION_FILE, save_auth, set_session_effort } from "../src/config.ab"
+import { find_jq, jq_value } from "../src/json.ab"
+
+test "env_or falls back when the variable is unset" {
+    assert(env_or("YALA_UNSET_TEST_VARIABLE", "fallback") == "fallback")
+}
+
+test "env_or reads variables that exist" {
+    assert(env_or("PATH", "fallback") != "fallback")
+}
+
+test "get_api_base always has a value" {
+    assert(get_api_base() != "")
+}
+
+test "auth and session files live under /tmp/yala" {
+    assert(AUTH_FILE == "/tmp/yala/auth.json")
+    assert(SESSION_FILE == "/tmp/yala/session.json")
+}
+
+test "get_model always has a value" {
+    assert(get_model() != "")
+}
+
+test "is_configured matches the resolved API key" {
+    assert(is_configured() == (get_api_key() != ""))
+}
+
+test "effort levels are known" {
+    assert(is_known_effort("disable"))
+    assert(is_known_effort("minimal"))
+    assert(is_known_effort("low"))
+    assert(is_known_effort("medium"))
+    assert(is_known_effort("high"))
+    assert(is_known_effort("xhigh"))
+    assert(is_known_effort("max"))
+    assert(is_known_effort("ultra"))
+    assert(not is_known_effort("bogus"))
+    assert(len(effort_levels()) == 8)
+}
+
+test "set_session_effort rejects unknown levels" {
+    assert(not set_session_effort("bogus"))
+}
+
+test "is_debug_value treats empty, 0 and false as off" {
+    assert(is_debug_value("") == false)
+    assert(is_debug_value("0") == false)
+    assert(is_debug_value("false") == false)
+    assert(is_debug_value("1") == true)
+    assert(is_debug_value("yes") == true)
+}
+
+test "debug_enabled follows YALA_DEBUG" {
+    trust env_var_set("YALA_DEBUG", "1")
+    assert(debug_enabled())
+    trust env_var_set("YALA_DEBUG", "0")
+    assert(not debug_enabled())
+    trust env_var_set("YALA_DEBUG", "")
+    assert(not debug_enabled())
+}
+
+test "connect accepts the supported providers" {
+    assert(is_known_provider("openai-compatible"))
+    assert(is_known_provider("other-openai"))
+    assert(not is_known_provider("anthropic"))
+    assert(len(connect_providers()) == 2)
+}
+
+test "save_auth writes credentials as json when jq is available" {
+    const jq = find_jq()
+    if jq != "" {
+        const path = "/tmp/yala/test-auth.json"
+        assert(save_auth(path, "openai-compatible", "https://example.test/v1", "sk-test-key"))
+        assert(jq_value(path, "provider") == "openai-compatible")
+        assert(jq_value(path, "base_url") == "https://example.test/v1")
+        assert(jq_value(path, "apikey") == "sk-test-key")
+    }
+}
+
+test "save_auth escapes special characters with jq" {
+    const jq = find_jq()
+    if jq != "" {
+        const path = "/tmp/yala/test-auth-escape.json"
+        assert(save_auth(path, "other-openai", "https://example.test/v1", "k\"q\\z"))
+        assert(jq_value(path, "apikey") == "k\"q\\z")
+    }
+}

@@ -1,0 +1,43 @@
+import { assert } from "std/test"
+import { text_contains } from "std/text"
+import { env_var_set } from "std/env"
+import { find_jq } from "../src/json.ab"
+import { SEARCH_API_BASE, format_search_results, search_api_base, search_api_key } from "../src/tools/web.ab"
+
+test "format_search_results renders titles, urls and snippets" {
+    const jq = find_jq()
+    if jq != "" {
+        const response = trust $ {jq} -n -c '\{code: 0, data: \{results: [\{title: "Go 1.26", url: "https://go.dev", snippet: "release notes"}, \{title: "Second", url: "https://two.test", snippet: "more"}]}}' $
+        const text = format_search_results(response)
+        assert(text_contains(text, "Go 1.26"))
+        assert(text_contains(text, "https://go.dev"))
+        assert(text_contains(text, "release notes"))
+        assert(text_contains(text, "Second"))
+        assert(text_contains(text, "https://two.test"))
+    }
+    assert(format_search_results("not json") == "")
+}
+
+test "format_search_results reports search errors" {
+    const jq = find_jq()
+    if jq != "" {
+        const response = trust $ {jq} -n -c '\{code: -1, message: "Query is required."}' $
+        assert(format_search_results(response) == "search failed: Query is required.")
+        const empty = trust $ {jq} -n -c '\{code: 0, data: \{results: []}}' $
+        assert(format_search_results(empty) == "")
+    }
+}
+
+test "search_api_key prefers YALA_SEARCH_API_KEY" {
+    trust env_var_set("YALA_SEARCH_API_KEY", "sk-search-test")
+    assert(search_api_key() == "sk-search-test")
+    trust env_var_set("YALA_SEARCH_API_KEY", "")
+    assert(search_api_key() != "sk-search-test")
+}
+
+test "search_api_base honors the environment override" {
+    trust env_var_set("YALA_SEARCH_API_BASE", "http://127.0.0.1:9999")
+    assert(search_api_base() == "http://127.0.0.1:9999")
+    trust env_var_set("YALA_SEARCH_API_BASE", "")
+    assert(search_api_base() == SEARCH_API_BASE)
+}

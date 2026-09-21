@@ -1,0 +1,116 @@
+import { assert } from "std/test"
+import { text_contains } from "std/text"
+import { build_system_prompt, execute_tool, is_known_tool, pending_messages, tool_argument_key, tool_call_argument, tool_calls_signature, tool_definitions, tool_names } from "../src/agent.ab"
+import { find_jq } from "../src/json.ab"
+
+test "build_system_prompt describes the agent, environment and tools" {
+    const prompt = build_system_prompt()
+    assert(prompt != "")
+    assert(text_contains(prompt, "yala"))
+    assert(text_contains(prompt, "Current time:"))
+    assert(text_contains(prompt, "System:"))
+    assert(text_contains(prompt, "Shell:"))
+    assert(text_contains(prompt, "Working directory:"))
+    assert(text_contains(prompt, "- run:"))
+    assert(text_contains(prompt, "- sudo_run:"))
+    assert(text_contains(prompt, "- question:"))
+    assert(text_contains(prompt, "- web_search:"))
+    assert(not text_contains(prompt, "read_file"))
+}
+
+test "tool_definitions lists run, sudo_run, question and web_search" {
+    const jq = find_jq()
+    if jq != "" {
+        const tools = tool_definitions()
+        assert(tools != "")
+        const names = trust $ printf '%s' "{tools}" | {jq} -r '[.[].function.name] | join(",")' $
+        const required = trust $ printf '%s' "{tools}" | {jq} -r '.[0].function.parameters.required[0]' $
+        const name = trust $ printf '%s' "{tools}" | {jq} -r '.[0].function.parameters.properties.command.type' $
+        const question_key = trust $ printf '%s' "{tools}" | {jq} -r '.[2].function.parameters.required[0]' $
+        const question_type = trust $ printf '%s' "{tools}" | {jq} -r '.[2].function.parameters.properties.question.type' $
+        const search_key = trust $ printf '%s' "{tools}" | {jq} -r '.[3].function.parameters.required[0]' $
+        const search_type = trust $ printf '%s' "{tools}" | {jq} -r '.[3].function.parameters.properties.query.type' $
+        assert(names == "run,sudo_run,question,web_search")
+        assert(required == "command")
+        assert(name == "string")
+        assert(question_key == "question")
+        assert(question_type == "string")
+        assert(search_key == "query")
+        assert(search_type == "string")
+    }
+}
+
+test "is_known_tool accepts the registered tools" {
+    assert(is_known_tool("run"))
+    assert(is_known_tool("sudo_run"))
+    assert(is_known_tool("question"))
+    assert(is_known_tool("web_search"))
+    assert(not is_known_tool("shell"))
+    assert(len(tool_names()) == 4)
+}
+
+test "tool_argument_key covers every registered tool" {
+    for name in tool_names() {
+        assert(tool_argument_key(name) != "")
+    }
+    assert(tool_argument_key("run") == "command")
+    assert(tool_argument_key("sudo_run") == "command")
+    assert(tool_argument_key("question") == "question")
+    assert(tool_argument_key("web_search") == "query")
+    assert(tool_argument_key("nope") == "")
+}
+
+test "tool_call_argument reads the argument of one call" {
+    const jq = find_jq()
+    if jq != "" {
+        const args = trust $ {jq} -n -c --arg command "ls -la" '\{command: \$command}' $
+        const qargs = trust $ {jq} -n -c --arg question "which one?" '\{question: \$question}' $
+        const calls = trust $ {jq} -n -c --arg a1 "{args}" --arg a2 "{qargs}" '[\{id: "call_1", function: \{name: "run", arguments: \$a1}}, \{id: "call_2", function: \{name: "question", arguments: \$a2}}]' $
+        assert(tool_call_argument(calls, "0", "command") == "ls -la")
+        assert(tool_call_argument(calls, "1", "question") == "which one?")
+        assert(tool_call_argument(calls, "0", "question") == "")
+        assert(tool_call_argument(calls, "1", "") == "")
+        assert(tool_call_argument("not json", "0", "command") == "")
+    }
+}
+
+test "execute_tool dispatches run and rejects unknown tools" {
+    assert(execute_tool("run", "echo agent") == "agent")
+    assert(execute_tool("run", "") == "cannot read the command argument for tool run")
+    assert(execute_tool("question", "") == "cannot read the question argument for tool question")
+    assert(execute_tool("nope", "echo x") == "unknown tool: nope")
+}
+
+test "pending_messages retries from the latest user or tool message" {
+    const jq = find_jq()
+    if jq != "" {
+        const messages = trust $ {jq} -n -c '[\{role: "system", content: "s"}, \{role: "user", content: "u1"}, \{role: "assistant", content: "a1"}, \{role: "user", content: "u2"}, \{role: "assistant", content: "a2"}]' $
+        const pending = pending_messages(messages)
+        const count = trust $ printf '%s' "{pending}" | {jq} -r 'length' $
+        const last = trust $ printf '%s' "{pending}" | {jq} -r '.[-1].content' $
+        assert(count == "3")
+        assert(last == "u2")
+        const with_tool = trust $ {jq} -n -c '[\{role: "user", content: "u"}, \{role: "assistant", content: "a"}, \{role: "tool", content: "out"}]' $
+        const kept = trust $ printf '%s' "{pending_messages(with_tool)}" | {jq} -r '.[-1].role' $
+        assert(kept == "tool")
+        const none = trust $ {jq} -n -c '[\{role: "system", content: "s"}, \{role: "assistant", content: "a"}]' $
+        assert(pending_messages(none) == "")
+    }
+    assert(pending_messages("") == "")
+}
+
+test "tool_calls_signature ignores ids and distinguishes arguments" {
+    const jq = find_jq()
+    if jq != "" {
+        const args = trust $ {jq} -n -c --arg command "ls" '\{command: \$command}' $
+        const first = trust $ {jq} -n -c --arg arguments "{args}" '[\{id: "call_1", type: "function", function: \{name: "run", arguments: \$arguments}}]' $
+        const second = trust $ {jq} -n -c --arg arguments "{args}" '[\{id: "call_2", type: "function", function: \{name: "run", arguments: \$arguments}}]' $
+        assert(tool_calls_signature(first) != "")
+        assert(tool_calls_signature(first) == tool_calls_signature(second))
+        const args2 = trust $ {jq} -n -c --arg command "pwd" '\{command: \$command}' $
+        const other = trust $ {jq} -n -c --arg arguments "{args2}" '[\{id: "call_3", type: "function", function: \{name: "run", arguments: \$arguments}}]' $
+        assert(tool_calls_signature(other) != tool_calls_signature(first))
+        assert(tool_calls_signature("[]") == "[]")
+    }
+    assert(tool_calls_signature("not json") == "")
+}

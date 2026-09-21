@@ -1,0 +1,98 @@
+import { VERSION, build_prompt, flag_value, wants } from "./cli.ab"
+import { run_continue, run_once } from "./agent.ab"
+import { connect, effort_levels, get_effort, is_known_effort, SESSION_FILE, set_session_effort, set_session_model } from "./config.ab"
+import { ensure_jq } from "./json.ab"
+import { clear_messages, list_models } from "./llm.ab"
+import { error, info } from "./ui.ab"
+
+/// Prints command line usage.
+fun print_usage() {
+    echo("yala {VERSION} - Yet Another LLM Agent")
+    echo("")
+    echo("Usage:")
+    echo("  yala --connect <provider>  Interactively save LLM credentials")
+    echo("  yala --model               List the models offered by the API endpoint")
+    echo("  yala --model, -m <id>      Select the model to use")
+    echo("  yala --effort              Show the current thinking effort and list the available levels")
+    echo("  yala --effort <level>      Set the thinking effort (disable / minimal / low / medium / high / xhigh / max / ultra)")
+    echo("  yala <message>             Start a conversation")
+    echo("  yala --new                 Clear the conversation history and start a new one")
+    echo("  yala --continue, -c        Retry from the latest user prompt or tool result")
+    echo("  yala --help                Show help")
+    echo("  yala --version             Show the version")
+    echo("")
+    echo("Environment:")
+    echo("  YALA_API_KEY            LLM API key")
+    echo("  YALA_API_BASE           LLM API base URL")
+    echo("  YALA_MODEL              Model name")
+    echo("  YALA_EFFORT             Thinking effort")
+    echo("  YALA_SEARCH_API_KEY     Anysearch API key used by web_search, anonymous when unset")
+    echo("  YALA_SEARCH_API_BASE    Anysearch API base URL override, defaults to https://api.anysearch.com")
+    echo("  YALA_DEBUG              Debug mode")
+}
+
+main(args) {
+    const has_connect = wants(args, "--connect", "--connect")
+    const connect_provider = flag_value(args, "--connect", "--connect")
+
+    const has_continue = wants(args, "-c", "--continue")
+
+    const has_new = wants(args, "--new", "--new")
+
+    const has_model = wants(args, "-m", "--model")
+    const model_name = flag_value(args, "-m", "--model")
+
+    const has_effort = wants(args, "--effort", "--effort")
+    const effort_name = flag_value(args, "--effort", "--effort")
+
+    if {
+        wants(args, "-h", "--help"):
+            print_usage()
+        wants(args, "-v", "--version"):
+            echo(VERSION)
+        has_connect:
+            connect(connect_provider)
+        has_new: {
+            if clear_messages(SESSION_FILE) {
+                info("started a new conversation in {SESSION_FILE}")
+            }
+        }
+        has_continue: {
+            ensure_jq()
+            run_continue()
+        }
+        has_model and model_name == "": {
+            for model in list_models() {
+                echo(model)
+            }
+        }
+        has_model: {
+            if set_session_model(model_name) {
+                info("session model set to {model_name}")
+            }
+        }
+        has_effort and effort_name == "": {
+            const current = get_effort()
+            if current == "" {
+                info("thinking effort: server default")
+            } else {
+                info("thinking effort: {current}")
+            }
+            for level in effort_levels() {
+                echo(level)
+            }
+        }
+        has_effort: {
+            if not is_known_effort(effort_name) {
+                error("unknown effort: {effort_name}, expected disable/minimal/low/medium/high/xhigh/max/ultra")
+            }
+            if set_session_effort(effort_name) {
+                info("session thinking effort set to {effort_name}")
+            }
+        }
+        else: {
+            ensure_jq()
+            run_once(build_prompt(args))
+        }
+    }
+}

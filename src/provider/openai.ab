@@ -1,0 +1,157 @@
+import { ends_with, slice, split_lines } from "std/text"
+
+import { debug_enabled, get_api_base, get_api_key, get_effort, get_model } from "../config.ab"
+import { ensure_jq, find_jq } from "../json.ab"
+import { debug, error } from "../ui.ab"
+
+/// Joins an API `base` with `path`, dropping trailing slashes from the base.
+pub fun join_url(base: Text, path: Text): Text {
+    let clean = base
+    let trailing = ends_with(clean, "/")
+    while trailing == true {
+        clean = slice(clean, 0, len(clean) - 1)
+        trailing = ends_with(clean, "/")
+    }
+    return "{clean}/{path}"
+}
+
+/// Builds the full URL for an API `path` under the configured base.
+pub fun api_url(path: Text): Text {
+    return join_url(get_api_base(), path)
+}
+
+/// Builds the JSON body for a chat completion request.
+///
+/// `tools_json` is the tool definition array offered to the model; pass "[]"
+/// or "" to send a plain chat request. `effort` is the thinking effort: ""
+/// leaves it to the server, "disable" turns thinking off, any other level
+/// enables thinking with that reasoning effort.
+pub fun build_chat_body(model: Text, messages_json: Text, tools_json: Text, effort: Text): Text {
+    const jq = ensure_jq()
+    if jq == "" {
+        return ""
+    }
+    let tools = tools_json
+    if tools == "" {
+        tools = "[]"
+    }
+    const body = $ {jq} -n -c \
+        --arg model "{model}" \
+        --argjson messages "{messages_json}" \
+        --argjson tools "{tools}" \
+        --arg effort "{effort}" \
+        '\{model: \$model, messages: \$messages} + (if (\$tools | length) > 0 then \{tools: \$tools} else null end) + (if \$effort == "" then null elif \$effort == "disable" then \{thinking: \{type: "disabled"}} else \{thinking: \{type: "enabled"}, reasoning_effort: \$effort} end)' $ failed {
+        return ""
+    }
+    return body
+}
+
+/// Extracts the error message from a response, or "" when there is none.
+pub fun parse_chat_error(response: Text): Text {
+    const jq = find_jq()
+    if jq == "" {
+        return ""
+    }
+    const message = $ printf '%s' "{response}" | {jq} -r '((.error | strings) // (.error | objects | .message) // .message // empty)' $ failed {
+        return ""
+    }
+    return message
+}
+
+/// Sends `messages_json` to `<base>/chat/completions` and returns the raw body.
+///
+/// This is the only yala function that performs an HTTP request. Callers get
+/// the response body as JSON, or "" when the request failed.
+pub fun chat_completion(messages_json: Text, tools_json: Text): Text {
+    const key = get_api_key()
+    if key == "" {
+        error("no API key: set YALA_API_KEY or run yala --connect")
+        return ""
+    }
+    const body = build_chat_body(get_model(), messages_json, tools_json, get_effort())
+    if body == "" {
+        error("cannot build the chat request body")
+        return ""
+    }
+    const url = api_url("chat/completions")
+    if debug_enabled() {
+        debug("POST {url}")
+        debug("{body}")
+    }
+    const response = $ printf '%s' "{body}" | curl -sSL -X POST "{url}" -H "Authorization: Bearer {key}" -H "Content-Type: application/json" -d @- $ failed(code) {
+        error("cannot reach {url} (exit code {code})")
+        return ""
+    }
+    const api_error = parse_chat_error(response)
+    if api_error != "" {
+        error("{api_error}")
+        return ""
+    }
+    return response
+}
+
+/// Extracts the assistant message from a response as compact JSON.
+///
+/// Tool call indexes are dropped so the message can be sent back to the API on
+/// the next turn. `reasoning_content` is kept: DeepSeek requires it back when
+/// the request carries tools, otherwise the next call fails with a 400.
+pub fun parse_assistant_message(response: Text): Text {
+    const jq = find_jq()
+    if jq == "" {
+        return ""
+    }
+    const message = $ printf '%s' "{response}" | {jq} -c '(.choices[0].message // empty) | (if .tool_calls then .tool_calls |= map(del(.index)) else del(.tool_calls) end)' $ failed {
+        return ""
+    }
+    return message
+}
+
+/// Extracts the assistant text from a chat completion response.
+pub fun parse_chat_reply(response: Text): Text {
+    const jq = find_jq()
+    if jq == "" {
+        return ""
+    }
+    const reply = $ printf '%s' "{response}" | {jq} -r '.choices[0].message.content // empty' $ failed {
+        return ""
+    }
+    return reply
+}
+
+/// Extracts the tool calls from a response as compact JSON, `[]` when none.
+pub fun parse_tool_calls(response: Text): Text {
+    const jq = find_jq()
+    if jq == "" {
+        return ""
+    }
+    const calls = $ printf '%s' "{response}" | {jq} -c '.choices[0].message.tool_calls // []' $ failed {
+        return ""
+    }
+    return calls
+}
+
+/// Returns the model ids offered by the configured API endpoint.
+pub fun fetch_models(): [Text] {
+    const key = get_api_key()
+    if key == "" {
+        error("no API key: set YALA_API_KEY or run yala --connect")
+        return []
+    }
+    const jq = ensure_jq()
+    if jq == "" {
+        return []
+    }
+    const url = api_url("models")
+    if debug_enabled() {
+        debug("GET {url}")
+    }
+    const response = $ curl -fsSL -H "Authorization: Bearer {key}" "{url}" $ failed(code) {
+        error("cannot fetch models from {url} (exit code {code})")
+        return []
+    }
+    const output = $ printf '%s' "{response}" | {jq} -r '.data[].id' $ failed {
+        error("cannot parse the model list from {url}")
+        return []
+    }
+    return split_lines(output)
+}

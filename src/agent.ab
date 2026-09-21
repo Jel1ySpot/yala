@@ -1,0 +1,355 @@
+import { array_contains } from "std/array"
+import { file_exists } from "std/fs"
+import { join, split, split_lines } from "std/text"
+
+import { env_or, get_model, SESSION_FILE } from "./config.ab"
+import { ensure_jq, jq_set_json } from "./json.ab"
+import { first_messages, push_message, push_message_json, read_messages } from "./llm.ab"
+import { chat_completion, parse_assistant_message, parse_chat_reply, parse_tool_calls } from "./provider/openai.ab"
+import { run, sudo_run } from "./tools/bash.ab"
+import { ask_question } from "./tools/question.ab"
+import { web_search } from "./tools/web.ab"
+import { error, info, output } from "./ui.ab"
+
+/// Maximum number of automatic retries after a failed request.
+pub const MAX_RETRIES = 5
+
+/// Number of identical tool calls in a row that stops the loop.
+pub const MAX_REPEATS = 3
+
+/// Returns the current date and time, for example "2026-09-21 15:04:05 +0800".
+fun system_time(): Text {
+    const now = $ date '+%Y-%m-%d %H:%M:%S %z' $ failed {
+        return ""
+    }
+    return now
+}
+
+/// Returns the distribution name from /etc/os-release, or "".
+fun system_distro(): Text {
+    if not file_exists("/etc/os-release") {
+        return ""
+    }
+    const name = $ grep -m1 '^PRETTY_NAME=' /etc/os-release | cut -d= -f2- | tr -d '"' $ failed {
+        return ""
+    }
+    return name
+}
+
+/// Returns a one-line system description, for example "Linux 6.9.1 x86_64 (Arch Linux)".
+fun system_info(): Text {
+    const kernel = $ uname -srm $ failed {
+        return ""
+    }
+    const distro = system_distro()
+    if distro == "" {
+        return kernel
+    }
+    return "{kernel} ({distro})"
+}
+
+/// Returns a one-line shell description for the prompt.
+fun shell_info(): Text {
+    const bash_version = env_or("BASH_VERSION", "")
+    const login_shell = env_or("SHELL", "")
+    if bash_version == "" {
+        if login_shell == "" {
+            return "unknown"
+        }
+        return login_shell
+    }
+    if login_shell == "" {
+        return "bash {bash_version}"
+    }
+    return "bash {bash_version} (login shell: {login_shell})"
+}
+
+/// Builds the system prompt that starts a new conversation.
+pub fun build_system_prompt(): Text {
+    const cwd = trust $ pwd $
+    return join([
+        "You are an assistant operating inside yala, a command-line LLM agent harness running in a shell. You help users by executing shell command.",
+        "",
+        "Available tools:",
+        "- run: run a bash command and return its output",
+        "- sudo_run: run a bash command with sudo, requesting the user's password when needed, and return its output",
+        "- question: ask the user a question and return the answer",
+        "- web_search: search the web and return result titles, URLs and snippets",
+        "",
+        "Guidelines:",
+        "- Answer in the same language as the user.",
+        "- Be concise and practical; show the commands you would run.",
+        "- Use tools when you need real file or system information; never invent command output.",
+        "- Use question when you need a decision or missing information from the user; do not guess.",
+        "- Use web_search when you need current facts from the internet; cite the URLs in your answer.",
+        "",
+        "Current time: {system_time()}",
+        "System: {system_info()}",
+        "Shell: {shell_info()}",
+        "Working directory: {cwd}",
+    ], "\n")
+}
+
+/// Names of the tools the agent is allowed to call.
+pub fun tool_names(): [Text] {
+    return ["run", "sudo_run", "question", "web_search"]
+}
+
+/// Returns true when `name` is one of the registered tools.
+pub fun is_known_tool(name: Text): Bool {
+    return array_contains(tool_names(), name)
+}
+
+/// Returns the JSON tool definitions offered to the model.
+pub fun tool_definitions(): Text {
+    const jq = ensure_jq()
+    if jq == "" {
+        return ""
+    }
+    const tools = $ {jq} -n -c '[\{type: "function", function: \{name: "run", description: "Run a bash command and return its output.", parameters: \{type: "object", properties: \{command: \{type: "string", description: "the bash command to run"}}, required: ["command"]}}}, \{type: "function", function: \{name: "sudo_run", description: "Run a bash command with sudo, asking the user for the password when needed, and return its output.", parameters: \{type: "object", properties: \{command: \{type: "string", description: "the bash command to run as root"}}, required: ["command"]}}}, \{type: "function", function: \{name: "question", description: "Ask the user a question and return their natural-language answer.", parameters: \{type: "object", properties: \{question: \{type: "string", description: "the question to ask the user"}}, required: ["question"]}}}, \{type: "function", function: \{name: "web_search", description: "Search the web and return result titles, URLs and snippets.", parameters: \{type: "object", properties: \{query: \{type: "string", description: "the search query"}}, required: ["query"]}}}]' $ failed {
+        return ""
+    }
+    return tools
+}
+
+/// Returns the argument key of one tool, or "" for unknown tools.
+pub fun tool_argument_key(name: Text): Text {
+    if name == "run" or name == "sudo_run" {
+        return "command"
+    }
+    if name == "question" {
+        return "question"
+    }
+    if name == "web_search" {
+        return "query"
+    }
+    return ""
+}
+
+/// Executes one tool call and returns its output.
+pub fun execute_tool(name: Text, argument: Text): Text {
+    if name == "run" and argument != "" {
+        return run(argument)
+    }
+    if name == "sudo_run" and argument != "" {
+        return sudo_run(argument)
+    }
+    if name == "question" and argument != "" {
+        return ask_question(argument)
+    }
+    if name == "web_search" and argument != "" {
+        return web_search(argument)
+    }
+    if is_known_tool(name) {
+        return "cannot read the {tool_argument_key(name)} argument for tool {name}"
+    }
+    return "unknown tool: {name}"
+}
+
+/// Returns one text argument of a tool call, or "" when unreadable.
+pub fun tool_call_argument(calls: Text, index: Text, key: Text): Text {
+    const jq = ensure_jq()
+    if jq == "" {
+        return ""
+    }
+    if key == "" {
+        return ""
+    }
+    const value = trust $ printf '%s' "{calls}" | {jq} -r --argjson i "{index}" --arg key "{key}" '.[\$i].function.arguments as \$a | (if (\$a | type) == "string" then (\$a | fromjson) else \$a end) | .[\$key] // empty' 2>/dev/null $
+    return value
+}
+
+/// Builds the {role: "tool"} message for one tool result.
+fun tool_result_message(call_id: Text, content: Text): Text {
+    const jq = ensure_jq()
+    if jq == "" {
+        return ""
+    }
+    const message = $ {jq} -n -c --arg id "{call_id}" --arg content "{content}" '\{role: "tool", tool_call_id: \$id, content: \$content}' $ failed {
+        return ""
+    }
+    return message
+}
+
+/// Runs the tool calls of one assistant message, appending their results.
+///
+/// Returns the updated message array, or "" when a message cannot be added.
+fun run_tool_calls(messages: Text, calls: Text): Text {
+    const jq = ensure_jq()
+    if jq == "" {
+        return ""
+    }
+    const entries = $ printf '%s' "{calls}" | {jq} -r 'to_entries[] | [.key, .value.id, .value.function.name] | @tsv' $ failed {
+        return ""
+    }
+    let current = messages
+    for line in split_lines(entries) {
+        const parts = split(line, "\t")
+        if len(parts) >= 3 {
+            const index = parts[0]
+            const call_id = parts[1]
+            const name = parts[2]
+            const key = tool_argument_key(name)
+            const argument = tool_call_argument(calls, index, key)
+            if name != "question" {
+                info("{name}: {argument}")
+            }
+            const message = tool_result_message(call_id, execute_tool(name, argument))
+            if message == "" {
+                return ""
+            }
+            current = push_message_json(current, message)
+            if current == "" {
+                return ""
+            }
+        }
+    }
+    return current
+}
+
+/// Stores the conversation in SESSION_FILE.
+fun save_messages(messages: Text): Null {
+    if not jq_set_json(SESSION_FILE, "messages", messages) {
+        error("cannot save the conversation to {SESSION_FILE}")
+    }
+}
+
+/// Returns the conversation up to the latest user or tool message.
+///
+/// Trailing assistant messages are dropped: they answer a turn that already
+/// finished, so the retry starts from the pending user prompt or tool result.
+pub fun pending_messages(messages_json: Text): Text {
+    if messages_json == "" {
+        return ""
+    }
+    const jq = ensure_jq()
+    if jq == "" {
+        return ""
+    }
+    const pending = trust $ printf '%s' "{messages_json}" | {jq} -c '. as \$messages | ([\$messages | to_entries[] | select(.value.role == "user" or .value.role == "tool") | .key] | last) as \$index | if \$index == null then null else \$messages[0:(\$index + 1)] end' $
+    if pending == "" or pending == "null" {
+        return ""
+    }
+    return pending
+}
+
+/// Returns a stable signature of a tool call array, ignoring ids and indexes.
+///
+/// Arguments are parsed and keys sorted, so whitespace and key order do not
+/// hide a repeated call.
+pub fun tool_calls_signature(calls: Text): Text {
+    const jq = ensure_jq()
+    if jq == "" {
+        return ""
+    }
+    const signature = $ printf '%s' "{calls}" | {jq} -cS '[.[] | .function.arguments as \$arguments | \{name: .function.name, arguments: (try (\$arguments | fromjson) catch \$arguments)}]' $ failed {
+        return ""
+    }
+    return signature
+}
+
+/// Runs the agent loop on an existing conversation until the final answer.
+///
+/// There is no turn limit. The loop stops when the model answers without tool
+/// calls, when a request keeps failing (MAX_RETRIES), or when the model sends
+/// the same tool call MAX_REPEATS times in a row.
+fun run_loop(conversation: Text): Null {
+    const tools = tool_definitions()
+    if tools == "" {
+        return null
+    }
+    info("model={get_model()}")
+    let messages = conversation
+    let retries = 0
+    let repeats = 0
+    let last_calls = ""
+    while true {
+        const response = chat_completion(messages, tools)
+        const assistant = parse_assistant_message(response)
+        if assistant == "" {
+            retries += 1
+            if retries > MAX_RETRIES {
+                error("giving up after {MAX_RETRIES} retries")
+                return null
+            }
+            info("retrying after an error ({retries}/{MAX_RETRIES})")
+            messages = pending_messages(messages)
+            if messages == "" {
+                error("nothing to retry: the conversation has no user prompt or tool result")
+                return null
+            }
+            save_messages(messages)
+            continue
+        }
+        messages = push_message_json(messages, assistant)
+        if messages == "" {
+            error("cannot append the assistant reply")
+            return null
+        }
+        const calls = parse_tool_calls(response)
+        if calls == "[]" {
+            save_messages(messages)
+            const reply = parse_chat_reply(response)
+            if reply == "" {
+                error("the model returned an empty answer")
+            } else {
+                output(reply)
+            }
+            return null
+        }
+        const signature = tool_calls_signature(calls)
+        const same = signature != "" and signature == last_calls
+        if same == true {
+            repeats += 1
+        } else {
+            repeats = 1
+        }
+        last_calls = signature
+        if repeats >= MAX_REPEATS {
+            error("stopped after {MAX_REPEATS} identical tool calls in a row")
+            return null
+        }
+        messages = run_tool_calls(messages, calls)
+        if messages == "" {
+            error("cannot append the tool results")
+            return null
+        }
+        save_messages(messages)
+    }
+    return null
+}
+
+/// Sends `prompt` and runs the agent loop until the final answer.
+///
+/// A new session starts with the system prompt, an existing one gets the
+/// prompt appended. The pending prompt is saved before the request so that
+/// `--continue` can retry it when the request fails.
+pub fun run_once(prompt: Text): Null {
+    if prompt == "" {
+        error("nothing to do, pass a prompt or use --help")
+        return null
+    }
+    let messages = read_messages(SESSION_FILE)
+    if messages == "" {
+        messages = first_messages(build_system_prompt(), prompt)
+    } else {
+        messages = push_message(messages, "user", prompt)
+    }
+    if messages == "" {
+        error("cannot build the conversation")
+        return null
+    }
+    save_messages(messages)
+    run_loop(messages)
+}
+
+/// Retries the session from the latest user prompt or tool result.
+pub fun run_continue(): Null {
+    const messages = pending_messages(read_messages(SESSION_FILE))
+    if messages == "" {
+        error("nothing to continue: {SESSION_FILE} has no user prompt or tool result")
+        return null
+    }
+    save_messages(messages)
+    run_loop(messages)
+}
