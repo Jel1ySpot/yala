@@ -77,9 +77,8 @@ stdenv.mkDerivation (finalAttrs: {
     description = "Command-line LLM agent written in Amber and compiled to Bash";
     homepage = "https://github.com/Jel1ySpot/yala";
     changelog = "https://github.com/Jel1ySpot/yala/releases/tag/v${finalAttrs.version}";
+    license = lib.licenses.mit;
     mainProgram = "yala";
     platforms = lib.platforms.unix;
-    # The yala repository does not ship a license file yet; add
-    # `license = lib.licenses.<id>;` here before submitting to nixpkgs.
   };
 })

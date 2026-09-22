@@ -125,3 +125,7 @@ dist/         amber build output (the executable script)
 flake.nix     Nix flake (package, overlay, NixOS module)
 nix/package.nix     Nix derivation (builds with the nixpkgs amber-lang)
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

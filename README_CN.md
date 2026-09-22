@@ -125,3 +125,7 @@ dist/         amber build 的可执行脚本
 flake.nix     Nix flake（package、overlay、NixOS 模块）
 nix/package.nix     Nix 构建表达式（使用 nixpkgs 的 amber-lang）
 ```
+
+## 许可证
+
+MIT，详见 [LICENSE](LICENSE)。
