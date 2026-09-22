@@ -2,6 +2,10 @@
 dist/
 docs/
 
+# Nix build outputs
+result
+result-*
+
 # Local scratch files
 *.log
 *.tmp

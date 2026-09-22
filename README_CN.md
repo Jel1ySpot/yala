@@ -34,6 +34,31 @@ curl -L -o yala https://github.com/jel1yspot/yala/releases/latest/download/yala.
 curl -fL -o /tmp/yala.sh https://github.com/jel1yspot/yala/releases/latest/download/yala.sh && sudo install -m 0755 /tmp/yala.sh /usr/local/bin/yala && yala --help
 ```
 
+- 使用 Nix：
+
+```bash
+# 不安装直接运行
+nix run github:Jel1ySpot/yala -- --help
+
+# 安装到用户 profile
+nix profile install github:Jel1ySpot/yala
+```
+
+NixOS（flake）可以把 yala 加为 input，再用 overlay 或模块：
+
+```nix
+{
+  inputs.yala.url = "github:Jel1ySpot/yala";
+
+  # 用 overlay 后即可使用 pkgs.yala
+  nixpkgs.overlays = [ inputs.yala.overlays.default ];
+  environment.systemPackages = [ pkgs.yala ];
+
+  # 或者导入模块，直接安装到系统
+  imports = [ inputs.yala.nixosModules.default ];
+}
+```
+
 ## 命令
 
 `yala --connect <provider>` 交互式配置 LLM 凭据。
@@ -97,4 +122,6 @@ src/
 tests/        amber test .
 docs/         amber docs
 dist/         amber build 的可执行脚本
+flake.nix     Nix flake（package、overlay、NixOS 模块）
+nix/package.nix     Nix 构建表达式（使用 nixpkgs 的 amber-lang）
 ```

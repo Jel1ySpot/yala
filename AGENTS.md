@@ -11,6 +11,14 @@
   工具输出重定向到 `/tmp/yala/{tool_call_id}.tool.out`；解析函数接收文件路径、用 jq 直接读文件，
   tool 消息用 `jq --rawfile` 组装。不要把解析函数改回文本参数。
 
+## Nix 打包
+
+- `flake.nix` + `nix/package.nix`：用 nixpkgs 的 `amber-lang`（0.6.0-alpha）从源码构建；
+  源码由 flake 传入（`src = self`），`doCheck` 会跑 `amber test .`，
+  安装后用 `wrapProgram` 把 bash/coreutils/curl/gnugrep/jq 注入 PATH。
+- `nix/package.nix` 的 `version` 要和 `src/cli.ab` 的 `VERSION` 同步，
+  不一致时 `versionCheckHook` 会让构建失败；改动后用 `nix flake check` 验证。
+
 ## Amber 工具链
 
 - 系统版已是 nightly：`/opt/amber/amber`（release `0.6.1-nightly-2026-04-30`，commit `4bb3c49`），

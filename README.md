@@ -34,6 +34,31 @@ curl -L -o yala https://github.com/jel1yspot/yala/releases/latest/download/yala.
 curl -fL -o /tmp/yala.sh https://github.com/jel1yspot/yala/releases/latest/download/yala.sh && sudo install -m 0755 /tmp/yala.sh /usr/local/bin/yala && yala --help
 ```
 
+- With Nix:
+
+```bash
+# run without installing
+nix run github:Jel1ySpot/yala -- --help
+
+# install into your profile
+nix profile install github:Jel1ySpot/yala
+```
+
+On NixOS with flakes, add the input and either use the overlay or the module:
+
+```nix
+{
+  inputs.yala.url = "github:Jel1ySpot/yala";
+
+  # with the overlay, `pkgs.yala` becomes available
+  nixpkgs.overlays = [ inputs.yala.overlays.default ];
+  environment.systemPackages = [ pkgs.yala ];
+
+  # or import the module, which installs yala system-wide
+  imports = [ inputs.yala.nixosModules.default ];
+}
+```
+
 ## Commands
 
 `yala --connect <provider>` interactively save LLM credentials.
@@ -97,4 +122,6 @@ src/
 tests/        amber test .
 docs/         amber docs
 dist/         amber build output (the executable script)
+flake.nix     Nix flake (package, overlay, NixOS module)
+nix/package.nix     Nix derivation (builds with the nixpkgs amber-lang)
 ```
