@@ -1,6 +1,6 @@
 import { assert } from "std/test"
 import { text_contains } from "std/text"
-import { build_system_prompt, execute_tool, is_known_tool, pending_messages, tool_argument_key, tool_call_argument, tool_calls_signature, tool_definitions, tool_names } from "../src/agent.ab"
+import { build_system_prompt, execute_tool, is_known_tool, pending_messages, tool_argument_key, tool_call_argument, tool_calls_signature, tool_definitions, tool_names, tool_output_path, tool_result_message } from "../src/agent.ab"
 import { find_jq } from "../src/json.ab"
 
 test "build_system_prompt describes the agent, environment and tools" {
@@ -74,11 +74,43 @@ test "tool_call_argument reads the argument of one call" {
     }
 }
 
-test "execute_tool dispatches run and rejects unknown tools" {
-    assert(execute_tool("run", "echo agent") == "agent")
-    assert(execute_tool("run", "") == "cannot read the command argument for tool run")
-    assert(execute_tool("question", "") == "cannot read the question argument for tool question")
-    assert(execute_tool("nope", "echo x") == "unknown tool: nope")
+test "tool_output_path sanitizes the tool call id" {
+    assert(tool_output_path("call_abc-123") == "/tmp/yala/call_abc-123.tool.out")
+    assert(tool_output_path("a/b c") == "/tmp/yala/a_b_c.tool.out")
+    assert(tool_output_path("") == "")
+}
+
+test "execute_tool redirects tool output to a file" {
+    const path = "/tmp/yala/agent-test-tool.out"
+    assert(execute_tool("run", "echo agent", path))
+    const ran = trust $ cat "{path}" $
+    assert(ran == "agent")
+    assert(execute_tool("run", "", path))
+    const missing_command = trust $ cat "{path}" $
+    assert(missing_command == "cannot read the command argument for tool run")
+    assert(execute_tool("question", "", path))
+    const missing_question = trust $ cat "{path}" $
+    assert(missing_question == "cannot read the question argument for tool question")
+    assert(execute_tool("nope", "echo x", path))
+    const unknown = trust $ cat "{path}" $
+    assert(unknown == "unknown tool: nope")
+}
+
+test "tool_result_message embeds the output file as content" {
+    const jq = find_jq()
+    if jq != "" {
+        const path = "/tmp/yala/agent-test-result.out"
+        trust $ printf 'line one\nline "two"' > "{path}" $
+        const message = tool_result_message("call_1", path)
+        const role = trust $ printf '%s' "{message}" | {jq} -r '.role' $
+        const call_id = trust $ printf '%s' "{message}" | {jq} -r '.tool_call_id' $
+        const content = trust $ printf '%s' "{message}" | {jq} -r '.content' $
+        assert(role == "tool")
+        assert(call_id == "call_1")
+        assert(text_contains(content, "line one"))
+        assert(text_contains(content, "line \"two\""))
+    }
+    assert(tool_result_message("call_1", "") == "")
 }
 
 test "pending_messages retries from the latest user or tool message" {

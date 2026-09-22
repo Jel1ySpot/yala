@@ -1,36 +1,30 @@
-import { STATE_DIR, ensure_state_dir } from "../json.ab"
+import { ensure_state_dir } from "../json.ab"
 
-/// Runs `command` in a bash subshell and returns its combined output.
+/// Runs `command` in a bash subshell, writing its combined output to `path`.
 ///
-/// stdout and stderr are merged into a temporary file; a failing command gets
-/// its exit code appended so the caller can tell what happened.
-fun capture(prefix: Text, command: Text): Text {
+/// stdout and stderr are redirected into `path`; a failing command gets its
+/// exit code appended so the caller can tell what happened. Returns true when
+/// the output file was written.
+fun capture(prefix: Text, command: Text, path: Text): Bool {
     if not ensure_state_dir() {
-        return "cannot create {STATE_DIR}"
+        return false
     }
-    const path = trust $ mktemp "{STATE_DIR}/tool-output.XXXXXX" $
     if path == "" {
-        return "cannot create a temporary file for the command output"
+        return false
     }
     $ {prefix} bash -c "{command}" > "{path}" 2>&1 $ failed(code) {
-        const output = trust $ cat "{path}" $
-        trust $ rm -f "{path}" $
-        if output == "" {
-            return "[exit code: {code}]"
-        }
-        return "{output}\n[exit code: {code}]"
+        trust $ if [ -s "{path}" ]; then printf '\n[exit code: %s]' "{code}" >> "{path}"; else printf '[exit code: %s]' "{code}" > "{path}"; fi $
+        return true
     }
-    const output = trust $ cat "{path}" $
-    trust $ rm -f "{path}" $
-    return output
+    return true
 }
 
-/// Runs a bash command and returns its output.
-pub fun run(command: Text): Text {
-    return capture("", command)
+/// Runs a bash command and writes its output to `path`.
+pub fun run_to(command: Text, path: Text): Bool {
+    return capture("", command, path)
 }
 
-/// Runs a bash command with sudo, asking for the password in the shell.
-pub fun sudo_run(command: Text): Text {
-    return capture("sudo", command)
+/// Runs a bash command with sudo and writes its output to `path`.
+pub fun sudo_run_to(command: Text, path: Text): Bool {
+    return capture("sudo", command, path)
 }

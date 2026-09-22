@@ -7,6 +7,9 @@
 - yala = Yet Another LLM Agent，用 Amber 编写、编译为 Bash。
 - 入口 `src/main.ab`，模块 `src/{cli,config,llm,agent,ui}.ab` 与 `src/{provider,tools}/`，测试 `tests/*_test.ab`。
 - 常用命令：`make check`、`make test`、`make build`（产物 `dist/yala`）、`make docs`。
+- HTTP 响应与工具输出都不走 shell 变量：AI 响应由 `curl -o` 写入 `/tmp/yala/{请求序号}.out`，
+  工具输出重定向到 `/tmp/yala/{tool_call_id}.tool.out`；解析函数接收文件路径、用 jq 直接读文件，
+  tool 消息用 `jq --rawfile` 组装。不要把解析函数改回文本参数。
 
 ## Amber 工具链
 

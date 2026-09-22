@@ -2,6 +2,13 @@ import { assert } from "std/test"
 import { build_chat_body, join_url, parse_assistant_message, parse_chat_error, parse_chat_reply, parse_tool_calls } from "../src/provider/openai.ab"
 import { find_jq } from "../src/json.ab"
 
+/// Writes `content` to a response file and returns its path.
+fun response_file(name: Text, content: Text): Text {
+    const path = "/tmp/yala/{name}.out"
+    trust $ printf '%s' "{content}" > "{path}" $
+    return path
+}
+
 test "join_url joins bases and paths with one slash" {
     assert(join_url("https://api.example.com", "models") == "https://api.example.com/models")
     assert(join_url("https://api.example.com/", "models") == "https://api.example.com/models")
@@ -66,7 +73,7 @@ test "parse_assistant_message keeps tool calls and reasoning" {
     if jq != "" {
         const arguments = trust $ {jq} -n -c --arg command "ls" '\{command: \$command}' $
         const response = trust $ {jq} -n -c --arg arguments "{arguments}" '\{choices: [\{message: \{role: "assistant", content: "checking", reasoning_content: "hmm", tool_calls: [\{index: 0, id: "call_1", type: "function", function: \{name: "run", arguments: \$arguments}}]}}]}' $
-        const message = parse_assistant_message(response)
+        const message = parse_assistant_message(response_file("provider-assistant", response))
         assert(message != "")
         const role = trust $ printf '%s' "{message}" | {jq} -r '.role' $
         const content = trust $ printf '%s' "{message}" | {jq} -r '.content' $
@@ -81,16 +88,17 @@ test "parse_assistant_message keeps tool calls and reasoning" {
         assert(reasoning == "hmm")
         assert(has_index == "false")
     }
-    assert(parse_assistant_message("not json") == "")
+    assert(parse_assistant_message(response_file("provider-assistant-bad", "not json")) == "")
+    assert(parse_assistant_message("") == "")
 }
 
 test "parse_chat_reply extracts the assistant content" {
     const jq = find_jq()
     if jq != "" {
         const response = trust $ {jq} -n -c --arg content "hello" '\{choices: [\{message: \{role: "assistant", content: \$content}}]}' $
-        assert(parse_chat_reply(response) == "hello")
+        assert(parse_chat_reply(response_file("provider-reply", response)) == "hello")
     }
-    assert(parse_chat_reply("not json") == "")
+    assert(parse_chat_reply(response_file("provider-reply-bad", "not json")) == "")
     assert(parse_chat_reply("") == "")
 }
 
@@ -99,28 +107,30 @@ test "parse_tool_calls returns the tool call array" {
     if jq != "" {
         const arguments = trust $ {jq} -n -c --arg command "ls" '\{command: \$command}' $
         const response = trust $ {jq} -n -c --arg arguments "{arguments}" '\{choices: [\{message: \{role: "assistant", content: "checking", tool_calls: [\{index: 0, id: "call_1", type: "function", function: \{name: "run", arguments: \$arguments}}]}}]}' $
-        const calls = parse_tool_calls(response)
+        const calls = parse_tool_calls(response_file("provider-calls", response))
         const count = trust $ printf '%s' "{calls}" | {jq} -r 'length' $
         const name = trust $ printf '%s' "{calls}" | {jq} -r '.[0].function.name' $
         assert(count == "1")
         assert(name == "run")
         const plain = trust $ {jq} -n -c --arg content "hi" '\{choices: [\{message: \{role: "assistant", content: \$content}}]}' $
-        assert(parse_tool_calls(plain) == "[]")
+        assert(parse_tool_calls(response_file("provider-calls-plain", plain)) == "[]")
     }
-    assert(parse_tool_calls("not json") == "")
+    assert(parse_tool_calls(response_file("provider-calls-bad", "not json")) == "")
+    assert(parse_tool_calls("") == "")
 }
 
 test "parse_chat_error finds api error messages" {
     const jq = find_jq()
     if jq != "" {
         const nested = trust $ {jq} -n -c '\{error: \{message: "invalid api key"}}' $
-        assert(parse_chat_error(nested) == "invalid api key")
+        assert(parse_chat_error(response_file("provider-error-nested", nested)) == "invalid api key")
         const flat = trust $ {jq} -n -c '\{error: "plain error"}' $
-        assert(parse_chat_error(flat) == "plain error")
+        assert(parse_chat_error(response_file("provider-error-flat", flat)) == "plain error")
         const top = trust $ {jq} -n -c '\{message: "top error"}' $
-        assert(parse_chat_error(top) == "top error")
+        assert(parse_chat_error(response_file("provider-error-top", top)) == "top error")
         const ok = trust $ {jq} -n -c '\{choices: []}' $
-        assert(parse_chat_error(ok) == "")
+        assert(parse_chat_error(response_file("provider-error-none", ok)) == "")
     }
-    assert(parse_chat_error("not json") == "")
+    assert(parse_chat_error(response_file("provider-error-bad", "not json")) == "")
+    assert(parse_chat_error("") == "")
 }

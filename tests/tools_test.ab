@@ -1,21 +1,33 @@
 import { assert } from "std/test"
 import { text_contains } from "std/text"
 import { ensure_state_dir } from "../src/json.ab"
-import { run } from "../src/tools/bash.ab"
+import { run_to } from "../src/tools/bash.ab"
 import { read_file, write_file } from "../src/tools/files.ab"
 import { ask_question } from "../src/tools/question.ab"
 
-test "run executes bash commands" {
-    assert(run("echo yala") == "yala")
-    assert(run("printf 'a\nb\n' | wc -l") == "2")
-    const mixed = run("echo out; echo err >&2")
+test "run_to writes command output to a file" {
+    const path = "/tmp/yala/test-bash-run.out"
+    assert(run_to("echo yala", path))
+    const first = trust $ cat "{path}" $
+    assert(first == "yala")
+    assert(run_to("printf 'a\nb\n' | wc -l", path))
+    const second = trust $ cat "{path}" $
+    assert(second == "2")
+    assert(run_to("echo out; echo err >&2", path))
+    const mixed = trust $ cat "{path}" $
     assert(text_contains(mixed, "out"))
     assert(text_contains(mixed, "err"))
 }
 
-test "run reports failing commands" {
-    assert(run("exit 3") == "[exit code: 3]")
-    assert(text_contains(run("echo boom >&2; exit 2"), "boom"))
+test "run_to reports failing commands" {
+    const path = "/tmp/yala/test-bash-run-fail.out"
+    assert(run_to("exit 3", path))
+    const empty = trust $ cat "{path}" $
+    assert(empty == "[exit code: 3]")
+    assert(run_to("echo boom >&2; exit 2", path))
+    const failed_output = trust $ cat "{path}" $
+    assert(text_contains(failed_output, "boom"))
+    assert(text_contains(failed_output, "[exit code: 2]"))
 }
 
 test "write_file and read_file round-trip" {

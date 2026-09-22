@@ -1,7 +1,7 @@
 import { ends_with, slice, split_lines } from "std/text"
 
 import { debug_enabled, get_api_base, get_api_key, get_effort, get_model } from "../config.ab"
-import { ensure_jq, find_jq } from "../json.ab"
+import { ensure_jq, ensure_state_dir, find_jq, STATE_DIR } from "../json.ab"
 import { debug, error } from "../ui.ab"
 
 /// Joins an API `base` with `path`, dropping trailing slashes from the base.
@@ -46,23 +46,29 @@ pub fun build_chat_body(model: Text, messages_json: Text, tools_json: Text, effo
     return body
 }
 
-/// Extracts the error message from a response, or "" when there is none.
-pub fun parse_chat_error(response: Text): Text {
+/// Extracts the error message from a response file, or "" when there is none.
+pub fun parse_chat_error(path: Text): Text {
+    if path == "" {
+        return ""
+    }
     const jq = find_jq()
     if jq == "" {
         return ""
     }
-    const message = $ printf '%s' "{response}" | {jq} -r '((.error | strings) // (.error | objects | .message) // .message // empty)' $ failed {
+    const message = $ {jq} -r '((.error | strings) // (.error | objects | .message) // .message // empty)' "{path}" $ failed {
         return ""
     }
     return message
 }
 
-/// Sends `messages_json` to `<base>/chat/completions` and returns the raw body.
+/// Sends `messages_json` to `<base>/chat/completions` and returns the file that
+/// holds the raw response body: `{STATE_DIR}/{id}.out`.
 ///
-/// This is the only yala function that performs an HTTP request. Callers get
-/// the response body as JSON, or "" when the request failed.
-pub fun chat_completion(messages_json: Text, tools_json: Text): Text {
+/// This is the only yala function that performs an HTTP request. curl writes
+/// the body straight to the file, so the parsers can hand the path to jq
+/// instead of pushing the JSON through shell variables. Callers get the path,
+/// or "" when the request failed.
+pub fun chat_completion(messages_json: Text, tools_json: Text, id: Text): Text {
     const key = get_api_key()
     if key == "" {
         error("no API key: set YALA_API_KEY or run yala --connect")
@@ -73,58 +79,71 @@ pub fun chat_completion(messages_json: Text, tools_json: Text): Text {
         error("cannot build the chat request body")
         return ""
     }
+    if not ensure_state_dir() {
+        return ""
+    }
+    const path = "{STATE_DIR}/{id}.out"
     const url = api_url("chat/completions")
     if debug_enabled() {
         debug("POST {url}")
         debug("{body}")
     }
-    const response = $ printf '%s' "{body}" | curl -sSL -X POST "{url}" -H "Authorization: Bearer {key}" -H "Content-Type: application/json" -d @- $ failed(code) {
+    $ printf '%s' "{body}" | curl -sSL -X POST "{url}" -H "Authorization: Bearer {key}" -H "Content-Type: application/json" -d @- -o "{path}" $ failed(code) {
         error("cannot reach {url} (exit code {code})")
         return ""
     }
-    const api_error = parse_chat_error(response)
+    const api_error = parse_chat_error(path)
     if api_error != "" {
         error("{api_error}")
         return ""
     }
-    return response
+    return path
 }
 
-/// Extracts the assistant message from a response as compact JSON.
+/// Extracts the assistant message from a response file as compact JSON.
 ///
 /// Tool call indexes are dropped so the message can be sent back to the API on
 /// the next turn. `reasoning_content` is kept: DeepSeek requires it back when
 /// the request carries tools, otherwise the next call fails with a 400.
-pub fun parse_assistant_message(response: Text): Text {
+pub fun parse_assistant_message(path: Text): Text {
+    if path == "" {
+        return ""
+    }
     const jq = find_jq()
     if jq == "" {
         return ""
     }
-    const message = $ printf '%s' "{response}" | {jq} -c '(.choices[0].message // empty) | (if .tool_calls then .tool_calls |= map(del(.index)) else del(.tool_calls) end)' $ failed {
+    const message = $ {jq} -c '(.choices[0].message // empty) | (if .tool_calls then .tool_calls |= map(del(.index)) else del(.tool_calls) end)' "{path}" $ failed {
         return ""
     }
     return message
 }
 
-/// Extracts the assistant text from a chat completion response.
-pub fun parse_chat_reply(response: Text): Text {
+/// Extracts the assistant text from a chat completion response file.
+pub fun parse_chat_reply(path: Text): Text {
+    if path == "" {
+        return ""
+    }
     const jq = find_jq()
     if jq == "" {
         return ""
     }
-    const reply = $ printf '%s' "{response}" | {jq} -r '.choices[0].message.content // empty' $ failed {
+    const reply = $ {jq} -r '.choices[0].message.content // empty' "{path}" $ failed {
         return ""
     }
     return reply
 }
 
-/// Extracts the tool calls from a response as compact JSON, `[]` when none.
-pub fun parse_tool_calls(response: Text): Text {
+/// Extracts the tool calls from a response file as compact JSON, `[]` when none.
+pub fun parse_tool_calls(path: Text): Text {
+    if path == "" {
+        return ""
+    }
     const jq = find_jq()
     if jq == "" {
         return ""
     }
-    const calls = $ printf '%s' "{response}" | {jq} -c '.choices[0].message.tool_calls // []' $ failed {
+    const calls = $ {jq} -c '.choices[0].message.tool_calls // []' "{path}" $ failed {
         return ""
     }
     return calls
@@ -141,15 +160,19 @@ pub fun fetch_models(): [Text] {
     if jq == "" {
         return []
     }
+    if not ensure_state_dir() {
+        return []
+    }
     const url = api_url("models")
+    const path = "{STATE_DIR}/models.out"
     if debug_enabled() {
         debug("GET {url}")
     }
-    const response = $ curl -fsSL -H "Authorization: Bearer {key}" "{url}" $ failed(code) {
+    $ curl -fsSL -H "Authorization: Bearer {key}" "{url}" -o "{path}" $ failed(code) {
         error("cannot fetch models from {url} (exit code {code})")
         return []
     }
-    const output = $ printf '%s' "{response}" | {jq} -r '.data[].id' $ failed {
+    const output = $ {jq} -r '.data[].id' "{path}" $ failed {
         error("cannot parse the model list from {url}")
         return []
     }

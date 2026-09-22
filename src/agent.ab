@@ -3,10 +3,10 @@ import { file_exists } from "std/fs"
 import { join, split, split_lines } from "std/text"
 
 import { env_or, get_model, SESSION_FILE } from "./config.ab"
-import { ensure_jq, jq_set_json } from "./json.ab"
+import { ensure_jq, ensure_state_dir, jq_set_json, STATE_DIR } from "./json.ab"
 import { first_messages, push_message, push_message_json, read_messages } from "./llm.ab"
 import { chat_completion, parse_assistant_message, parse_chat_reply, parse_tool_calls } from "./provider/openai.ab"
-import { run, sudo_run } from "./tools/bash.ab"
+import { run_to, sudo_run_to } from "./tools/bash.ab"
 import { ask_question } from "./tools/question.ab"
 import { web_search } from "./tools/web.ab"
 import { error, info, output } from "./ui.ab"
@@ -126,24 +126,61 @@ pub fun tool_argument_key(name: Text): Text {
     return ""
 }
 
-/// Executes one tool call and returns its output.
-pub fun execute_tool(name: Text, argument: Text): Text {
+/// Returns the temporary file where the output of tool call `call_id` goes.
+///
+/// The file is `{STATE_DIR}/{id}.tool.out`; characters that are unsafe in a
+/// file name are replaced with "_".
+pub fun tool_output_path(call_id: Text): Text {
+    if call_id == "" {
+        return ""
+    }
+    const safe = trust $ printf '%s' "{call_id}" | tr -c 'A-Za-z0-9._-' '_' $
+    if safe == "" {
+        return ""
+    }
+    return "{STATE_DIR}/{safe}.tool.out"
+}
+
+/// Writes `content` to `path`, reporting whether it worked.
+fun redirect_output(path: Text, content: Text): Bool {
+    if path == "" {
+        return false
+    }
+    $ printf '%s' "{content}" > "{path}" $ failed(code) {
+        error("cannot write {path} (exit code {code})")
+        return false
+    }
+    return true
+}
+
+/// Executes one tool call, redirecting its output to `path`.
+///
+/// Returns true when the output file was written. Errors such as an unknown
+/// tool or a missing argument are written there too, so the model reads them
+/// as the tool result.
+pub fun execute_tool(name: Text, argument: Text, path: Text): Bool {
+    if not ensure_state_dir() {
+        return false
+    }
+    if path == "" {
+        return false
+    }
     if name == "run" and argument != "" {
-        return run(argument)
+        return run_to(argument, path)
     }
     if name == "sudo_run" and argument != "" {
-        return sudo_run(argument)
+        return sudo_run_to(argument, path)
     }
     if name == "question" and argument != "" {
-        return ask_question(argument)
+        return redirect_output(path, ask_question(argument))
     }
     if name == "web_search" and argument != "" {
-        return web_search(argument)
+        return redirect_output(path, web_search(argument))
     }
     if is_known_tool(name) {
-        return "cannot read the {tool_argument_key(name)} argument for tool {name}"
+        return redirect_output(path, "cannot read the {tool_argument_key(name)} argument for tool {name}")
     }
-    return "unknown tool: {name}"
+    return redirect_output(path, "unknown tool: {name}")
 }
 
 /// Returns one text argument of a tool call, or "" when unreadable.
@@ -159,13 +196,19 @@ pub fun tool_call_argument(calls: Text, index: Text, key: Text): Text {
     return value
 }
 
-/// Builds the {role: "tool"} message for one tool result.
-fun tool_result_message(call_id: Text, content: Text): Text {
+/// Builds the {role: "tool"} message for one tool result file.
+///
+/// The content is read from `path` with jq's --rawfile, so the output never
+/// travels through a shell variable.
+pub fun tool_result_message(call_id: Text, path: Text): Text {
     const jq = ensure_jq()
     if jq == "" {
         return ""
     }
-    const message = $ {jq} -n -c --arg id "{call_id}" --arg content "{content}" '\{role: "tool", tool_call_id: \$id, content: \$content}' $ failed {
+    if path == "" {
+        return ""
+    }
+    const message = $ {jq} -n -c --arg id "{call_id}" --rawfile content "{path}" '\{role: "tool", tool_call_id: \$id, content: \$content}' $ failed {
         return ""
     }
     return message
@@ -179,6 +222,9 @@ fun run_tool_calls(messages: Text, calls: Text): Text {
     if jq == "" {
         return ""
     }
+    if not ensure_state_dir() {
+        return ""
+    }
     const entries = $ printf '%s' "{calls}" | {jq} -r 'to_entries[] | [.key, .value.id, .value.function.name] | @tsv' $ failed {
         return ""
     }
@@ -187,14 +233,24 @@ fun run_tool_calls(messages: Text, calls: Text): Text {
         const parts = split(line, "\t")
         if len(parts) >= 3 {
             const index = parts[0]
-            const call_id = parts[1]
+            let call_id = parts[1]
             const name = parts[2]
             const key = tool_argument_key(name)
             const argument = tool_call_argument(calls, index, key)
             if name != "question" {
                 info("{name}: {argument}")
             }
-            const message = tool_result_message(call_id, execute_tool(name, argument))
+            if call_id == "" {
+                call_id = "call-{index}"
+            }
+            const path = tool_output_path(call_id)
+            if path == "" {
+                return ""
+            }
+            if not execute_tool(name, argument, path) {
+                return ""
+            }
+            const message = tool_result_message(call_id, path)
             if message == "" {
                 return ""
             }
@@ -250,6 +306,11 @@ pub fun tool_calls_signature(calls: Text): Text {
 
 /// Runs the agent loop on an existing conversation until the final answer.
 ///
+/// Each request keeps its raw response in `{STATE_DIR}/{n}.out` and every tool
+/// call keeps its output in `{STATE_DIR}/{id}.tool.out`, so both can be
+/// inspected with jq after a run. Assistant content is printed as soon as it
+/// arrives, including content that accompanies tool calls.
+///
 /// There is no turn limit. The loop stops when the model answers without tool
 /// calls, when a request keeps failing (MAX_RETRIES), or when the model sends
 /// the same tool call MAX_REPEATS times in a row.
@@ -263,8 +324,10 @@ fun run_loop(conversation: Text): Null {
     let retries = 0
     let repeats = 0
     let last_calls = ""
+    let request_no = 0
     while true {
-        const response = chat_completion(messages, tools)
+        request_no += 1
+        const response = chat_completion(messages, tools, "{request_no}")
         const assistant = parse_assistant_message(response)
         if assistant == "" {
             retries += 1
@@ -287,13 +350,14 @@ fun run_loop(conversation: Text): Null {
             return null
         }
         const calls = parse_tool_calls(response)
+        const content = parse_chat_reply(response)
+        if content != "" {
+            output(content)
+        }
         if calls == "[]" {
             save_messages(messages)
-            const reply = parse_chat_reply(response)
-            if reply == "" {
+            if content == "" {
                 error("the model returned an empty answer")
-            } else {
-                output(reply)
             }
             return null
         }
