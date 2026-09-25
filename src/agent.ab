@@ -3,7 +3,7 @@ import { file_exists } from "std/fs"
 import { join, split, split_lines } from "std/text"
 
 import { env_or, get_model, SESSION_FILE } from "./config.ab"
-import { ensure_jq, ensure_state_dir, jq_set_json, STATE_DIR } from "./json.ab"
+import { ensure_jq, ensure_state_dir, jq_payload, jq_set_json, STATE_DIR } from "./json.ab"
 import { first_messages, push_message, push_message_json, read_messages } from "./llm.ab"
 import { chat_completion, parse_assistant_message, parse_chat_reply, parse_tool_calls } from "./provider/openai.ab"
 import { run_to, sudo_run_to } from "./tools/bash.ab"
@@ -184,6 +184,9 @@ pub fun execute_tool(name: Text, argument: Text, path: Text): Bool {
 }
 
 /// Returns one text argument of a tool call, or "" when unreadable.
+///
+/// The tool call array can embed large arguments, so it is handed to jq as a
+/// file instead of a command line argument.
 pub fun tool_call_argument(calls: Text, index: Text, key: Text): Text {
     const jq = ensure_jq()
     if jq == "" {
@@ -192,7 +195,19 @@ pub fun tool_call_argument(calls: Text, index: Text, key: Text): Text {
     if key == "" {
         return ""
     }
-    const value = trust $ printf '%s' "{calls}" | {jq} -r --argjson i "{index}" --arg key "{key}" '.[\$i].function.arguments as \$a | (if (\$a | type) == "string" then (\$a | fromjson) else \$a end) | .[\$key] // empty' 2>/dev/null $
+    const calls_file = jq_payload("calls", calls)
+    if calls_file == "" {
+        return ""
+    }
+    const index_file = jq_payload("index", index)
+    if index_file == "" {
+        return ""
+    }
+    const key_file = jq_payload("key", key)
+    if key_file == "" {
+        return ""
+    }
+    const value = trust $ {jq} -r --slurpfile i "{index_file}" --rawfile key "{key_file}" '.[\$i[0]].function.arguments as \$a | (if (\$a | type) == "string" then (\$a | fromjson) else \$a end) | .[\$key] // empty' "{calls_file}" 2>/dev/null $
     return value
 }
 

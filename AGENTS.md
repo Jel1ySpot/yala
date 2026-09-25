@@ -10,6 +10,10 @@
 - HTTP 响应与工具输出都不走 shell 变量：AI 响应由 `curl -o` 写入 `/tmp/yala/{请求序号}.out`，
   工具输出重定向到 `/tmp/yala/{tool_call_id}.tool.out`；解析函数接收文件路径、用 jq 直接读文件，
   tool 消息用 `jq --rawfile` 组装。不要把解析函数改回文本参数。
+- 可能很长的 jq 输入（messages/message/value/tools/model/effort/query/calls/index/key）先经
+  `jq_payload()` 写入 `/tmp/yala/jq.{pid}.{name}.tmp`，再用 `--rawfile`/`--slurpfile` 交给 jq；
+  不要用 `--arg`/`--argjson` 传长文本（Linux 单参数上限 128 KiB，会 execve E2BIG）。
+  用户 prompt 例外，仍走 `--arg`。
 
 ## Nix 打包
 

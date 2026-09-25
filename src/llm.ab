@@ -1,4 +1,4 @@
-import { ensure_jq, jq_get_json, jq_set_json } from "./json.ab"
+import { ensure_jq, jq_get_json, jq_payload, jq_set_json } from "./json.ab"
 import { fetch_models } from "./provider/openai.ab"
 
 /// Reads the conversation from `path` as compact JSON, or "" when it is empty.
@@ -16,12 +16,23 @@ pub fun clear_messages(path: Text): Bool {
 }
 
 /// Appends one compact JSON message object to a message array.
+///
+/// Both sides go through files: a tool result can carry a large command output,
+/// and the message array itself grows with the conversation.
 pub fun push_message_json(messages_json: Text, message_json: Text): Text {
     const jq = ensure_jq()
     if jq == "" {
         return ""
     }
-    const messages = $ printf '%s' "{messages_json}" | {jq} -c --argjson message "{message_json}" '. + [\$message]' $ failed {
+    const messages_file = jq_payload("messages", messages_json)
+    if messages_file == "" {
+        return ""
+    }
+    const message_file = jq_payload("message", message_json)
+    if message_file == "" {
+        return ""
+    }
+    const messages = $ {jq} -c --slurpfile message "{message_file}" '. + \$message' "{messages_file}" $ failed {
         return ""
     }
     return messages

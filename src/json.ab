@@ -163,6 +163,29 @@ pub fun ensure_state_dir(): Bool {
     return true
 }
 
+/// Writes `content` to a per-process temporary file and returns its path, or "".
+///
+/// jq payloads never travel as command line arguments: Linux limits a single
+/// argument to 128 KiB, so a long conversation or a large tool output would
+/// make execve fail with E2BIG before jq even starts. Callers hand the file to
+/// jq with `--rawfile`/`--slurpfile` instead. The pid keeps parallel runs from
+/// sharing a file.
+pub fun jq_payload(name: Text, content: Text): Text {
+    if not ensure_state_dir() {
+        return ""
+    }
+    const pid = trust $ echo \$\$ $
+    if pid == "" {
+        return ""
+    }
+    const path = "{STATE_DIR}/jq.{pid}.{name}.tmp"
+    $ printf '%s' "{content}" > "{path}" $ failed(code) {
+        error("cannot write {path} (exit code {code})")
+        return ""
+    }
+    return path
+}
+
 /// Makes sure a working jq is available and returns its path.
 ///
 /// Checks the `jq` command and `/tmp/yala/jq` first; when neither works it
@@ -246,14 +269,18 @@ pub fun jq_set_json(path: Text, key: Text, value_json: Text): Bool {
     if not ensure_state_dir() {
         return false
     }
+    const value_file = jq_payload("value", value_json)
+    if value_file == "" {
+        return false
+    }
     const tmp = "{path}.tmp"
     if file_exists(path) {
-        $ {jq} --argjson value "{value_json}" '.{key} = \$value' "{path}" > "{tmp}" $ failed(code) {
+        $ {jq} -c --slurpfile value "{value_file}" '.{key} = \$value[0]' "{path}" > "{tmp}" $ failed(code) {
             error("cannot update {path} (exit code {code})")
             return false
         }
     } else {
-        $ {jq} -n --argjson value "{value_json}" '.{key} = \$value' > "{tmp}" $ failed(code) {
+        $ {jq} -n -c --slurpfile value "{value_file}" '.{key} = \$value[0]' > "{tmp}" $ failed(code) {
             error("cannot create {path} (exit code {code})")
             return false
         }

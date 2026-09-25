@@ -1,7 +1,7 @@
 import { ends_with, slice, split_lines } from "std/text"
 
 import { debug_enabled, get_api_base, get_api_key, get_effort, get_model } from "../config.ab"
-import { ensure_jq, ensure_state_dir, find_jq, STATE_DIR } from "../json.ab"
+import { ensure_jq, ensure_state_dir, find_jq, jq_payload, STATE_DIR } from "../json.ab"
 import { debug, error } from "../ui.ab"
 
 /// Joins an API `base` with `path`, dropping trailing slashes from the base.
@@ -35,12 +35,28 @@ pub fun build_chat_body(model: Text, messages_json: Text, tools_json: Text, effo
     if tools == "" {
         tools = "[]"
     }
+    const model_file = jq_payload("model", model)
+    if model_file == "" {
+        return ""
+    }
+    const messages_file = jq_payload("messages", messages_json)
+    if messages_file == "" {
+        return ""
+    }
+    const tools_file = jq_payload("tools", tools)
+    if tools_file == "" {
+        return ""
+    }
+    const effort_file = jq_payload("effort", effort)
+    if effort_file == "" {
+        return ""
+    }
     const body = $ {jq} -n -c \
-        --arg model "{model}" \
-        --argjson messages "{messages_json}" \
-        --argjson tools "{tools}" \
-        --arg effort "{effort}" \
-        '\{model: \$model, messages: \$messages} + (if (\$tools | length) > 0 then \{tools: \$tools} else null end) + (if \$effort == "" then null elif \$effort == "disable" then \{thinking: \{type: "disabled"}} else \{thinking: \{type: "enabled"}, reasoning_effort: \$effort} end)' $ failed {
+        --rawfile model "{model_file}" \
+        --slurpfile messages "{messages_file}" \
+        --slurpfile tools "{tools_file}" \
+        --rawfile effort "{effort_file}" \
+        '(\$messages[0]) as \$messages | (\$tools[0]) as \$tools | \{model: \$model, messages: \$messages} + (if (\$tools | length) > 0 then \{tools: \$tools} else null end) + (if \$effort == "" then null elif \$effort == "disable" then \{thinking: \{type: "disabled"}} else \{thinking: \{type: "enabled"}, reasoning_effort: \$effort} end)' $ failed {
         return ""
     }
     return body

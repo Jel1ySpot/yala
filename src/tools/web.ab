@@ -1,5 +1,5 @@
 import { AUTH_FILE, debug_enabled, env_or } from "../config.ab"
-import { ensure_jq, jq_value } from "../json.ab"
+import { ensure_jq, jq_payload, jq_value } from "../json.ab"
 import { debug } from "../ui.ab"
 
 /// Default base URL of the Anysearch API.
@@ -53,7 +53,11 @@ pub fun web_search(query: Text): Text {
     if jq == "" {
         return "web_search: jq is not available"
     }
-    const body = $ {jq} -n -c --arg query "{query}" '\{query: \$query, max_results: {SEARCH_MAX_RESULTS}}' $ failed {
+    const query_file = jq_payload("query", query)
+    if query_file == "" {
+        return "web_search: cannot build the request body"
+    }
+    const body = $ {jq} -n -c --rawfile query "{query_file}" '\{query: \$query, max_results: {SEARCH_MAX_RESULTS}}' $ failed {
         return "web_search: cannot build the request body"
     }
     const url = "{search_api_base()}/v1/search"
