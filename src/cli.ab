@@ -1,5 +1,5 @@
 /// Version reported by --version.
-pub const VERSION = "0.1.2"
+pub const VERSION = "0.2.0"
 
 /// Returns true when `short` or `long` appears in the arguments.
 ///

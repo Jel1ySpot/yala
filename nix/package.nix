@@ -20,7 +20,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   # Keep in sync with `pub const VERSION` in src/cli.ab; the install check
   # fails when the two drift apart.
-  version = "0.1.2";
+  version = "0.2.0";
 
   inherit src;
 
